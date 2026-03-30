@@ -1,23 +1,20 @@
 import torch
-from torch import nn
+import torch.nn as nn
 
 from models import TimerBackbone
 from models.checkpoint_utils import load_backbone_state_dict
+from models.periodic_time_utils import (
+    marks_to_hour_dow_indices,
+    patch_center_timestep_indices,
+)
 
 
 class Model(nn.Module):
     """
     Timer: Generative Pre-trained Transformers Are Large Time Series Models (ICML 2024)
 
-    Paper: https://arxiv.org/abs/2402.02368
-    
-    GitHub: https://github.com/thuml/Large-Time-Series-Model
-    
-    Citation: @inproceedings{liutimer,
-        title={Timer: Generative Pre-trained Transformers Are Large Time Series Models},
-        author={Liu, Yong and Zhang, Haoran and Li, Chenyu and Huang, Xiangdong and Wang, Jianmin and Long, Mingsheng},
-        booktitle={Forty-first International Conference on Machine Learning}
-    }
+    Optional periodic embedding residual (PEFT): hour/day nn.Embedding + gamma * sum,
+    applied after the Transformer stack and before proj (see periodic_embedding_branch).
     """
     def __init__(self, configs):
         super().__init__()
@@ -32,30 +29,37 @@ class Model(nn.Module):
         self.dropout = configs.dropout
 
         self.output_attention = configs.output_attention
-        self.resonance_last_layer = bool(getattr(configs, "resonance_last_layer", 0))
-        self.harmonic_gated_resonance = bool(getattr(configs, "harmonic_gated_resonance", 0))
-        self.harmonic_fft_warmstart = bool(int(getattr(configs, "harmonic_fft_warmstart", 1)))
-        self.resonance_dt_hours = float(getattr(configs, "resonance_dt_hours", 1.0))
-        self._harmonic_fft_warmed = False
+        self.periodic_embedding_branch = bool(int(getattr(configs, "periodic_embedding_branch", 0)))
+        self.data_freq = getattr(configs, "freq", "h")
 
         self.backbone = TimerBackbone.Model(configs)
-        # Decoder
         self.decoder = self.backbone.decoder
         self.proj = self.backbone.proj
         self.enc_embedding = self.backbone.patch_embedding
 
+        if self.periodic_embedding_branch:
+            d_model = configs.d_model
+            bank = int(getattr(configs, "periodic_emb_bank_dim", 0) or 0)
+            if bank > 0:
+                self.hour_embed = nn.Embedding(24, bank)
+                self.day_embed = nn.Embedding(7, bank)
+                self.periodic_to_hidden = nn.Linear(bank, d_model)
+            else:
+                self.hour_embed = nn.Embedding(24, d_model)
+                self.day_embed = nn.Embedding(7, d_model)
+                self.periodic_to_hidden = None
+            self.periodic_gamma = nn.Parameter(torch.tensor(0.01, dtype=torch.float32))
 
         if self.ckpt_path != '':
             if self.ckpt_path == 'random':
                 print('loading model randomly')
             else:
                 print('loading model: ', self.ckpt_path)
-                # Pretrained / mismatched last-layer heads need strict=False.
-                strict_load = not (self.resonance_last_layer or self.harmonic_gated_resonance)
+                strict_load = not self.periodic_embedding_branch
                 if not strict_load:
                     print(
-                        'Note: strict=False (resonance or harmonic last layer): extra head params init from module; '
-                        'matching keys loaded from checkpoint.'
+                        'Note: strict=False (periodic_embedding_branch): backbone keys from ckpt; '
+                        'hour_embed/day_embed/gamma init in Timer.'
                     )
                 if self.ckpt_path.endswith('.pth'):
                     sd = load_backbone_state_dict(self.ckpt_path, from_lightning_ckpt=False)
@@ -63,73 +67,66 @@ class Model(nn.Module):
                 elif self.ckpt_path.endswith('.ckpt'):
                     sd = load_backbone_state_dict(self.ckpt_path, from_lightning_ckpt=True)
                     self.backbone.load_state_dict(sd, strict=strict_load)
-
                 else:
                     raise NotImplementedError
 
-    def _patch_center_physical_timestamps(self, batch_size, seq_len, n_vars, dtype, device):
-        """
-        Physical time at each patch center: T_p = (p*stride + (patch_len-1)/2) * dt_hours.
-        Monotonic in p; matches cos(2πω|T_i-T_j|+φ) on the causal lower triangle when time increases with index.
-        Returns [B * n_vars, N] or None if resonance / harmonic is off.
-        """
-        if not self.resonance_last_layer and not self.harmonic_gated_resonance:
-            return None
+    def _apply_periodic_residual(
+        self,
+        dec_out: torch.Tensor,
+        x_mark_enc: torch.Tensor,
+        batch_size: int,
+        seq_len: int,
+        n_vars: int,
+    ) -> torch.Tensor:
+        """dec_out [B*M, N, D]; x_mark_enc [B, L, F]."""
+        if not self.periodic_embedding_branch or x_mark_enc is None:
+            return dec_out
+        B, N, D = dec_out.shape
         pe = self.enc_embedding
-        patch_len = float(pe.patch_len)
-        stride = float(pe.stride)
         pad = pe.padding_patch_layer.padding
         pad_r = pad[-1] if isinstance(pad, tuple) and len(pad) >= 2 else 0
-        L = seq_len
-        L_pad = L + pad_r
-        if L_pad < pe.patch_len:
-            return None
-        N = (L_pad - pe.patch_len) // pe.stride + 1
-        dt = self.resonance_dt_hours
-        p_idx = torch.arange(N, device=device, dtype=torch.float64)
-        centers = (p_idx * stride + 0.5 * (patch_len - 1.0)) * dt
-        centers = centers.to(dtype=dtype).unsqueeze(0).expand(batch_size, n_vars, N)
-        centers = centers.reshape(batch_size * n_vars, N)
-        return centers
+        Lp = seq_len + pad_r
+        if Lp < pe.patch_len:
+            return dec_out
+        n_patches = (Lp - pe.patch_len) // pe.stride + 1
+        if n_patches != N:
+            return dec_out
 
-    def _maybe_harmonic_fft_warmstart(self, x_enc: torch.Tensor) -> None:
-        """First training forward: set specialist omega from batch rFFT (raw scale, before norm)."""
-        if not self.harmonic_gated_resonance or not self.harmonic_fft_warmstart:
-            return
-        if self._harmonic_fft_warmed or not self.training:
-            return
-        inner = self.backbone.decoder.attn_layers[-1].attention.inner_attention
-        fn = getattr(inner, "fft_warmstart_omega", None)
-        if fn is None:
-            return
-        series = x_enc.mean(dim=-1).detach()
-        inner.fft_warmstart_omega(series, self.resonance_dt_hours)
-        self._harmonic_fft_warmed = True
+        device = dec_out.device
+        centers = patch_center_timestep_indices(
+            seq_len, n_patches, pe.patch_len, pe.stride, pad_r, device
+        )
+        hour_l, dow_l = marks_to_hour_dow_indices(x_mark_enc, self.data_freq)
+        centers_e = centers.unsqueeze(0).expand(batch_size, -1)
+        hour_bn = hour_l.gather(1, centers_e)
+        dow_bn = dow_l.gather(1, centers_e)
+        hour_flat = hour_bn.unsqueeze(1).expand(batch_size, n_vars, n_patches).reshape(-1, n_patches)
+        dow_flat = dow_bn.unsqueeze(1).expand(batch_size, n_vars, n_patches).reshape(-1, n_patches)
+
+        hvec = self.hour_embed(hour_flat)
+        dvec = self.day_embed(dow_flat)
+        periodic = hvec + dvec
+        if self.periodic_to_hidden is not None:
+            periodic = self.periodic_to_hidden(periodic)
+        gamma = self.periodic_gamma.to(dtype=dec_out.dtype)
+        return dec_out + gamma * periodic
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         B, L, M = x_enc.shape
-        self._maybe_harmonic_fft_warmstart(x_enc)
 
-        # Normalization from Non-stationary Transformer
         means = x_enc.mean(1, keepdim=True).detach()
         x_enc = x_enc - means
         stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5).detach()
         x_enc /= stdev
 
-        # do patching and embedding
-        x_enc = x_enc.permute(0, 2, 1) # [B, M, T]
-        dec_in, n_vars = self.enc_embedding(x_enc) # [B * M, N, D]
+        x_enc = x_enc.permute(0, 2, 1)
+        dec_in, n_vars = self.enc_embedding(x_enc)
 
-        phys_t = self._patch_center_physical_timestamps(
-            B, L, n_vars, dec_in.dtype, dec_in.device
-        )
+        dec_out, attns = self.decoder(dec_in)
+        dec_out = self._apply_periodic_residual(dec_out, x_mark_enc, B, L, n_vars)
+        dec_out = self.proj(dec_out)
+        dec_out = dec_out.reshape(B, M, -1).transpose(1, 2)
 
-        # Transformer Blocks (diurnal on inner layers; last layer optional resonance bias)
-        dec_out, attns = self.decoder(dec_in, physical_timestamps=phys_t) # [B * M, N, D]
-        dec_out = self.proj(dec_out) # [B * M, N, L]
-        dec_out = dec_out.reshape(B, M, -1).transpose(1, 2) # [B, T, M]
-
-        # De-Normalization from Non-stationary Transformer
         dec_out = dec_out * stdev + means
         if self.output_attention:
             return dec_out, attns
@@ -137,8 +134,6 @@ class Model(nn.Module):
 
     def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         B, L, M = x_enc.shape
-        self._maybe_harmonic_fft_warmstart(x_enc)
-        # Normalization from Non-stationary Transformer
         means = torch.sum(x_enc, dim=1) / torch.sum(mask == 1, dim=1)
         means = means.unsqueeze(1).detach()
         x_enc = x_enc - means
@@ -148,62 +143,43 @@ class Model(nn.Module):
         stdev = stdev.unsqueeze(1).detach()
         x_enc /= stdev
 
-        # do patching and embedding
-        x_enc = x_enc.permute(0, 2, 1) # [B, M, T]
-        dec_in, n_vars = self.enc_embedding(x_enc) # [B * M, N, D]
+        x_enc = x_enc.permute(0, 2, 1)
+        dec_in, n_vars = self.enc_embedding(x_enc)
 
-        phys_t = self._patch_center_physical_timestamps(
-            B, L, n_vars, dec_in.dtype, dec_in.device
-        )
+        dec_out, attns = self.decoder(dec_in)
+        dec_out = self._apply_periodic_residual(dec_out, x_mark_enc, B, L, n_vars)
+        dec_out = self.proj(dec_out)
+        dec_out = dec_out.reshape(B, M, -1).transpose(1, 2)
 
-        # Transformer Blocks
-        dec_out, attns = self.decoder(dec_in, physical_timestamps=phys_t) # [B * M, N, D]
-        dec_out = self.proj(dec_out) # [B * M, N, L]
-        dec_out = dec_out.reshape(B, M, -1).transpose(1, 2) # [B, T, M]
-
-        # De-Normalization from Non-stationary Transformer
         dec_out = dec_out * stdev + means
         return dec_out
 
     def anomaly_detection(self, x_enc):
         B, L, M = x_enc.shape
-        self._maybe_harmonic_fft_warmstart(x_enc)
-
-        # Normalization from Non-stationary Transformer
         means = x_enc.mean(1, keepdim=True).detach()
         x_enc = x_enc - means
         stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5).detach()
         x_enc /= stdev
 
-        # do patching and embedding
-        x_enc = x_enc.permute(0, 2, 1) # [B, M, T]
-        dec_in, n_vars = self.enc_embedding(x_enc) # [B * M, N, D]
+        x_enc = x_enc.permute(0, 2, 1)
+        dec_in, n_vars = self.enc_embedding(x_enc)
+        x_mark_enc = None
 
-        phys_t = self._patch_center_physical_timestamps(
-            B, L, n_vars, dec_in.dtype, dec_in.device
-        )
+        dec_out, attns = self.decoder(dec_in)
+        dec_out = self._apply_periodic_residual(dec_out, x_mark_enc, B, L, n_vars)
+        dec_out = self.proj(dec_out)
+        dec_out = dec_out.reshape(B, M, -1).transpose(1, 2)
 
-        # Transformer Blocks
-        dec_out, attns = self.decoder(dec_in, physical_timestamps=phys_t) # [B * M, N, D]
-        dec_out = self.proj(dec_out) # [B * M, N, L]
-        dec_out = dec_out.reshape(B, M, -1).transpose(1, 2) # [B, T, M]
-
-        # De-Normalization from Non-stationary Transformer
         dec_out = dec_out * stdev + means
         return dec_out
 
-
     def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         if self.task_name == 'forecast':
-            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
-            return dec_out  # [B, T, D]
+            return self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
         if self.task_name == 'imputation':
-            dec_out = self.imputation(
+            return self.imputation(
                 x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
-            return dec_out  # [B, T, D]
         if self.task_name == 'anomaly_detection':
-            dec_out = self.anomaly_detection(x_enc)
-            return dec_out  # [B, T, D]
+            return self.anomaly_detection(x_enc)
 
         raise NotImplementedError
-

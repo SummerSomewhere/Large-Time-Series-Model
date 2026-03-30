@@ -32,7 +32,6 @@ do
 
 torchrun --nnodes=1 --nproc_per_node=5 run.py \
   --task_name forecast \
-  --diurnal_attn_bias 1\
   --is_finetuning 0 \
   --is_training 0 \
   --seed 1 \

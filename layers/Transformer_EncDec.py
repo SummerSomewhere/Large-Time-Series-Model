@@ -35,12 +35,11 @@ class EncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.activation = F.relu if activation == "relu" else F.gelu
 
-    def forward(self, x, attn_mask=None, tau=None, delta=None, physical_timestamps=None):
+    def forward(self, x, attn_mask=None, tau=None, delta=None):
         new_x, attn = self.attention(
             x, x, x,
             attn_mask=attn_mask,
             tau=tau, delta=delta,
-            physical_timestamps=physical_timestamps,
         )
         x = x + self.dropout(new_x)
 
@@ -58,27 +57,24 @@ class Encoder(nn.Module):
         self.conv_layers = nn.ModuleList(conv_layers) if conv_layers is not None else None
         self.norm = norm_layer
 
-    def forward(self, x, attn_mask=None, tau=None, delta=None, physical_timestamps=None):
-        # x [B, L, D]; physical_timestamps [B, L] passed only to last layer when provided
+    def forward(self, x, attn_mask=None, tau=None, delta=None):
         attns = []
-        n_layers = len(self.attn_layers)
         if self.conv_layers is not None:
             for i, (attn_layer, conv_layer) in enumerate(zip(self.attn_layers, self.conv_layers)):
                 delta = delta if i == 0 else None
                 x, attn = attn_layer(
-                    x, attn_mask=attn_mask, tau=tau, delta=delta, physical_timestamps=None
+                    x, attn_mask=attn_mask, tau=tau, delta=delta
                 )
                 x = conv_layer(x)
                 attns.append(attn)
             x, attn = self.attn_layers[-1](
-                x, tau=tau, delta=None, physical_timestamps=physical_timestamps
+                x, tau=tau, delta=None
             )
             attns.append(attn)
         else:
-            for li, attn_layer in enumerate(self.attn_layers):
-                ts = physical_timestamps if li == n_layers - 1 else None
+            for attn_layer in self.attn_layers:
                 x, attn = attn_layer(
-                    x, attn_mask=attn_mask, tau=tau, delta=delta, physical_timestamps=ts
+                    x, attn_mask=attn_mask, tau=tau, delta=delta
                 )
                 attns.append(attn)
 

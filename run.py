@@ -10,7 +10,7 @@ import torch.distributed as dist
 from exp.exp_forecast import Exp_Forecast
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from exp.exp_imputation import Exp_Imputation
-from utils.tools import HiddenPrints, infer_resonance_period_hours_from_freq
+from utils.tools import HiddenPrints
 
 if __name__ == '__main__':
 
@@ -85,120 +85,24 @@ if __name__ == '__main__':
         '--finetune_trainable',
         type=str,
         default='full',
-        choices=[
-            'full',
-            'last_layer',
-            'resonance_only',
-            'last_attention_only',
-            'harmonic_proj',
-        ],
-        help='Timer: full; last_layer; resonance_only; last_attention_only; '
-        'harmonic_proj=harmonic inner + proj only (needs harmonic_gated_resonance=1)',
+        choices=['full', 'last_layer', 'periodic_emb_proj'],
+        help='Timer: full; last_layer; periodic_emb_proj=hour/day embed + gamma + proj only '
+        '(needs periodic_embedding_branch=1)',
     )
     parser.add_argument('--local_rank', type=int, default=0, help='local_rank')
 
     parser.add_argument('--patch_len', type=int, default=24, help='input sequence length')
     parser.add_argument(
-        '--diurnal_attn_bias',
+        '--periodic_embedding_branch',
         type=int,
         default=0,
-        help='Timer only: 1 = add cos(2*pi*|i-j|/period) bias on selected heads; 0 = off (matches old ckpt)',
+        help='Timer: 1 = hour/day nn.Embedding residual + gamma before proj (uses batch_x_mark time features)',
     )
     parser.add_argument(
-        '--diurnal_lambda',
-        type=float,
-        default=1.0,
-        help='Timer: strength of diurnal cos term (logits get scale*scores + lambda*cos after mask path)',
-    )
-    parser.add_argument(
-        '--diurnal_period',
-        type=float,
-        default=24.0,
-        help='Timer: cos period in patch-token units (e.g. 24 with patch_len=1 stride=1 on hourly data)',
-    )
-    parser.add_argument(
-        '--resonance_last_layer',
+        '--periodic_emb_bank_dim',
         type=int,
         default=0,
-        help='Timer: 1 = legacy last-layer multi-head resonance (ignored if harmonic_gated_resonance=1)',
-    )
-    parser.add_argument(
-        '--harmonic_gated_resonance',
-        type=int,
-        default=0,
-        help='Timer: 1 = harmonic gated specialist head (α·QK+(1-α)·bias)⊗σ(gate), K harmonics, O(L) trig',
-    )
-    parser.add_argument(
-        '--harmonic_specialist_head',
-        type=int,
-        default=0,
-        help='Head index (0..n_heads-1) for harmonic gated specialist; other heads vanilla',
-    )
-    parser.add_argument(
-        '--harmonic_n_harmonics',
-        type=int,
-        default=3,
-        help='Number of harmonics ω,2ω,.. in specialist bias/gate',
-    )
-    parser.add_argument(
-        '--harmonic_lambda_init',
-        type=float,
-        default=1e-4,
-        help='Initial |λ_k| per harmonic (strength warmup; multiplicative gate only)',
-    )
-    parser.add_argument(
-        '--harmonic_fft_warmstart',
-        type=int,
-        default=1,
-        help='Timer: 1 = first training batch sets ω from rFFT peak on raw series (harmonic only)',
-    )
-    parser.add_argument(
-        '--resonance_head_mask',
-        type=str,
-        default='',
-        help='Comma/space-separated 0/1 per head; empty = all heads use resonance',
-    )
-    parser.add_argument(
-        '--resonance_dt_hours',
-        type=float,
-        default=1.0,
-        help='Timer: hours per raw timestep for patch-center physical time T (e.g. 1 for hourly)',
-    )
-    parser.add_argument(
-        '--resonance_lambda_init',
-        type=float,
-        default=0.1,
-        help='Initial per-head resonance strength λ (learnable)',
-    )
-    parser.add_argument(
-        '--resonance_phi_init',
-        type=float,
-        default=0.0,
-        help='Initial per-head phase φ (learnable)',
-    )
-    parser.add_argument(
-        '--resonance_omega_init',
-        type=float,
-        default=None,
-        help='Override ω init; if unset, ω=1/resonance_period_hours (from --resonance_period_hours or --freq)',
-    )
-    parser.add_argument(
-        '--resonance_period_hours',
-        type=float,
-        default=None,
-        help='Physical cycle in hours for ω=1/period when resonance_omega_init unset; None→infer from --freq',
-    )
-    parser.add_argument(
-        '--finetune_res_omega_lr',
-        type=float,
-        default=1e-5,
-        help='Timer finetune: Adam lr for res_omega (scheduler keeps this fixed while main lr decays)',
-    )
-    parser.add_argument(
-        '--finetune_res_lambda_lr',
-        type=float,
-        default=1e-5,
-        help='Timer finetune: Adam lr for res_lambda',
+        help='Timer: if >0, hour/day embeddings use this dim and a Linear maps to d_model; 0 = embed directly in d_model',
     )
     parser.add_argument(
         '--loss_fft_alpha',
@@ -240,8 +144,6 @@ if __name__ == '__main__':
     parser.add_argument('--mask_rate', type=float, default=0.25, help='mask ratio')
 
     args = parser.parse_args()
-    if getattr(args, "resonance_period_hours", None) is None:
-        args.resonance_period_hours = infer_resonance_period_hours_from_freq(args.freq)
     fix_seed = args.seed
     random.seed(fix_seed)
     torch.manual_seed(fix_seed)

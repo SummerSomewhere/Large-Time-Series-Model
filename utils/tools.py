@@ -85,14 +85,6 @@ class LargeScheduler:
                 tag = param_group.get("finetune_group", "main")
                 if tag == "main":
                     param_group["lr"] = lr
-                elif tag == "res_omega":
-                    param_group["lr"] = float(
-                        getattr(self.args, "finetune_res_omega_lr", 1e-5)
-                    )
-                elif tag == "res_lambda":
-                    param_group["lr"] = float(
-                        getattr(self.args, "finetune_res_lambda_lr", 1e-5)
-                    )
                 else:
                     param_group["lr"] = lr
             print('Updating learning rate to {}'.format(lr))
@@ -114,14 +106,6 @@ class LargeScheduler:
             tag = param_group.get("finetune_group", "main")
             if tag == "main":
                 param_group["lr"] = res
-            elif tag == "res_omega":
-                param_group["lr"] = float(
-                    getattr(self.args, "finetune_res_omega_lr", 1e-5)
-                )
-            elif tag == "res_lambda":
-                param_group["lr"] = float(
-                    getattr(self.args, "finetune_res_lambda_lr", 1e-5)
-                )
             else:
                 param_group["lr"] = res
         if n % 500 == 0:
@@ -333,71 +317,24 @@ def fft_complex_mae(pred: torch.Tensor, true: torch.Tensor, time_dim: int = 1) -
     return (fp - ft).abs().mean()
 
 
-def infer_resonance_period_hours_from_freq(freq_str) -> float:
-    """
-    Nominal cycle length in hours for ω = 1/period when physical timestamps use dt in hours (e.g. ETTh1 hourly → 24h day).
-    """
-    if freq_str is None or str(freq_str).strip() == "":
-        return 24.0
-    s = str(freq_str).strip().lower()
-    if s == "h" or s.startswith("h"):
-        return 24.0
-    if s == "d" or s == "b" or s.startswith("d"):
-        return 168.0
-    if "min" in s:
-        return 24.0
-    return 24.0
-
-
 def build_timer_finetune_param_groups(model, args):
     """
-    Split trainable Timer params: res_omega / res_lambda use finetune_res_*_lr; others use args.learning_rate.
-    Each group may include 'finetune_group' for LargeScheduler (main vs resonance lrs).
+    Timer: one Adam param group for all trainable tensors (learning_rate + optional weight_decay).
     """
     m = model.module if hasattr(model, "module") else model
-    omega_p, lambda_p, other_p = [], [], []
-    for name, p in m.named_parameters():
-        if not p.requires_grad:
-            continue
-        if name.endswith("res_omega") or "har_omega_raw" in name:
-            omega_p.append(p)
-        elif name.endswith("res_lambda"):
-            lambda_p.append(p)
-        else:
-            other_p.append(p)
+    trainable = [p for p in m.parameters() if p.requires_grad]
+    if not trainable:
+        return []
     wd = float(args.weight_decay) if int(getattr(args, "use_weight_decay", 0)) else 0.0
     lr_main = float(args.learning_rate)
-    lr_o = float(getattr(args, "finetune_res_omega_lr", 1e-5))
-    lr_l = float(getattr(args, "finetune_res_lambda_lr", 1e-5))
-    groups = []
-    if other_p:
-        groups.append(
-            {
-                "params": other_p,
-                "lr": lr_main,
-                "weight_decay": wd,
-                "finetune_group": "main",
-            }
-        )
-    if omega_p:
-        groups.append(
-            {
-                "params": omega_p,
-                "lr": lr_o,
-                "weight_decay": wd,
-                "finetune_group": "res_omega",
-            }
-        )
-    if lambda_p:
-        groups.append(
-            {
-                "params": lambda_p,
-                "lr": lr_l,
-                "weight_decay": wd,
-                "finetune_group": "res_lambda",
-            }
-        )
-    return groups
+    return [
+        {
+            "params": trainable,
+            "lr": lr_main,
+            "weight_decay": wd,
+            "finetune_group": "main",
+        }
+    ]
 
 
 def apply_timer_finetune_freeze(model, args) -> None:
@@ -405,11 +342,9 @@ def apply_timer_finetune_freeze(model, args) -> None:
     Timer only: freeze most weights for partial finetune. Unwrap DDP via .module when present.
     Modes (args.finetune_trainable):
       - full: no-op
-      - last_layer: last EncoderLayer FFN + norms + inner_attention + proj; Q/K/V/out Linear in
-        AttentionLayer stay frozen (no query/key/value/out_projection grads).
-      - resonance_only: freeze entire backbone; only train res_omega, res_lambda, res_phi on last inner_attention.
-      - last_attention_only: freeze entire backbone except last EncoderLayer.attention (Q/K/V/out + resonance inner).
-      - harmonic_proj: train only harmonic gated inner_attention + backbone.proj (needs harmonic_gated_resonance=1).
+      - last_layer: last EncoderLayer FFN + norms + inner_attention + proj; Q/K/V/out stay frozen.
+      - periodic_emb_proj: freeze backbone; train hour_embed, day_embed, periodic_gamma, proj
+        (requires periodic_embedding_branch=1).
     """
     mode = getattr(args, "finetune_trainable", "full")
     if mode is None or mode == "full":
@@ -430,30 +365,18 @@ def apply_timer_finetune_freeze(model, args) -> None:
                 p.requires_grad = True
         for p in m.backbone.proj.parameters():
             p.requires_grad = True
-        # Frozen: attn.query_projection, key_projection, value_projection, out_projection
-    elif mode == "resonance_only":
-        if not int(getattr(args, "resonance_last_layer", 0)):
-            raise ValueError("finetune_trainable=resonance_only requires resonance_last_layer=1")
-        inner = m.backbone.decoder.attn_layers[-1].attention.inner_attention
-        n = 0
-        for name, p in inner.named_parameters():
-            if name.startswith("res_"):
+    elif mode == "periodic_emb_proj":
+        if not int(getattr(args, "periodic_embedding_branch", 0)):
+            raise ValueError("finetune_trainable=periodic_emb_proj requires periodic_embedding_branch=1")
+        for p in m.hour_embed.parameters():
+            p.requires_grad = True
+        for p in m.day_embed.parameters():
+            p.requires_grad = True
+        m.periodic_gamma.requires_grad = True
+        align = getattr(m, "periodic_to_hidden", None)
+        if align is not None:
+            for p in align.parameters():
                 p.requires_grad = True
-                n += p.numel()
-        if n == 0:
-            raise RuntimeError("No res_* trainable params; is last layer FullAttentionLastLayerResonance?")
-    elif mode == "last_attention_only":
-        if not int(getattr(args, "resonance_last_layer", 0)):
-            raise ValueError("finetune_trainable=last_attention_only requires resonance_last_layer=1")
-        last = m.backbone.decoder.attn_layers[-1]
-        for p in last.attention.parameters():
-            p.requires_grad = True
-    elif mode == "harmonic_proj":
-        if not int(getattr(args, "harmonic_gated_resonance", 0)):
-            raise ValueError("finetune_trainable=harmonic_proj requires harmonic_gated_resonance=1")
-        inner = m.backbone.decoder.attn_layers[-1].attention.inner_attention
-        for p in inner.parameters():
-            p.requires_grad = True
         for p in m.backbone.proj.parameters():
             p.requires_grad = True
     else:

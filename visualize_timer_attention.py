@@ -316,24 +316,17 @@ def parse_args():
         help="JSON from exp test (env FORECAST_TEST_METRICS_JSON); show those MSE/MAE on figures only",
     )
     p.add_argument(
-        "--diurnal_attn_bias",
+        "--periodic_embedding_branch",
         type=int,
         default=0,
-        help="1 = cos(2*pi*|i-j|/period) bias on selected Timer heads (match training)",
+        help="1 = match training with hour/day embedding residual before proj (needs matching ckpt for proj/embed)",
     )
-    p.add_argument("--diurnal_lambda", type=float, default=1.0)
-    p.add_argument("--diurnal_period", type=float, default=24.0)
     p.add_argument(
-        "--resonance_last_layer",
+        "--periodic_emb_bank_dim",
         type=int,
         default=0,
-        help="1 = match training last-layer resonance (checkpoint must include those weights)",
+        help="Must match training when periodic branch used bank_dim→d_model Linear",
     )
-    p.add_argument("--resonance_head_mask", type=str, default="")
-    p.add_argument("--resonance_dt_hours", type=float, default=1.0)
-    p.add_argument("--resonance_lambda_init", type=float, default=0.1)
-    p.add_argument("--resonance_phi_init", type=float, default=0.0)
-    p.add_argument("--resonance_omega_init", type=float, default=None)
     return p.parse_args()
 
 
@@ -372,15 +365,8 @@ def build_config_ns(args: argparse.Namespace):
         use_gpu=torch.cuda.is_available(),
         gpu=args.gpu,
         inverse=False,
-        diurnal_attn_bias=args.diurnal_attn_bias,
-        diurnal_lambda=args.diurnal_lambda,
-        diurnal_period=args.diurnal_period,
-        resonance_last_layer=getattr(args, "resonance_last_layer", 0),
-        resonance_head_mask=getattr(args, "resonance_head_mask", ""),
-        resonance_dt_hours=getattr(args, "resonance_dt_hours", 1.0),
-        resonance_lambda_init=getattr(args, "resonance_lambda_init", 0.1),
-        resonance_phi_init=getattr(args, "resonance_phi_init", 0.0),
-        resonance_omega_init=getattr(args, "resonance_omega_init", None),
+        periodic_embedding_branch=getattr(args, "periodic_embedding_branch", 0),
+        periodic_emb_bank_dim=getattr(args, "periodic_emb_bank_dim", 0),
     )
     return ns
 
@@ -391,7 +377,7 @@ def build_synthetic_sin_batch(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     IMS-style tensors: batch_x [B, seq_len, M], batch_y [B, label_len+pred_len, M].
-    Time marks are unused by Timer diurnal bias (cos uses patch index distance |i-j| only).
+    Time marks feed periodic_embedding_branch when enabled (hour/day indices per patch center).
     """
     B = args.sin_batch_size
     Lx = args.seq_len
