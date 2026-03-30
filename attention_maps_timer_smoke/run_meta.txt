@@ -1,0 +1,5 @@
+ckpt=random
+n_layers=2
+dec_out_shape=(1, 672, 1)
+layer_0 attn shape (full)=(1, 4, 7, 7)
+layer_1 attn shape (full)=(1, 4, 7, 7)

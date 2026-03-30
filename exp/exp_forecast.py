@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import warnings
@@ -12,7 +13,15 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
 from utils.metrics import metric
-from utils.tools import EarlyStopping, visual, LargeScheduler, attn_map
+from utils.tools import (
+    EarlyStopping,
+    apply_timer_finetune_freeze,
+    attn_map,
+    build_timer_finetune_param_groups,
+    fft_complex_mae,
+    LargeScheduler,
+    visual,
+)
 
 warnings.filterwarnings('ignore')
 
@@ -33,12 +42,42 @@ class Exp_Forecast(Exp_Basic):
         return data_set, data_loader
 
     def _select_optimizer(self):
+        if getattr(self.args, "model", None) == "Timer":
+            groups = build_timer_finetune_param_groups(self.model, self.args)
+            if groups:
+                return optim.Adam(groups)
+        params = [p for p in self.model.parameters() if p.requires_grad]
+        if not params:
+            raise RuntimeError(
+                "No trainable parameters (check finetune_trainable / freeze settings)."
+            )
         if self.args.use_weight_decay:
-            model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate,
-                                     weight_decay=self.args.weight_decay)
+            model_optim = optim.Adam(
+                params, lr=self.args.learning_rate, weight_decay=self.args.weight_decay
+            )
         else:
-            model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
+            model_optim = optim.Adam(params, lr=self.args.learning_rate)
         return model_optim
+
+    def _finetune_forecast_loss(self, criterion, outputs, batch_y, flag: str):
+        """(1-α)*MSE + α*MAE(rFFT) on forecast (or IMS) window (TimeEmb-style mix)."""
+        alpha = float(getattr(self.args, "loss_fft_alpha", 0.0))
+        if self.args.use_ims:
+            pred = outputs[:, -self.args.seq_len:, :]
+            true = batch_y
+            if flag == "test":
+                pred = pred[:, -self.args.pred_len:, :]
+                true = true[:, -self.args.pred_len:, :]
+        else:
+            pred = outputs[:, -self.args.pred_len:, :]
+            true = batch_y[:, -self.args.pred_len:, :]
+        mse = criterion(pred, true)
+        if alpha <= 0.0:
+            return mse
+        fft_term = fft_complex_mae(pred, true, time_dim=1)
+        if alpha >= 1.0:
+            return fft_term
+        return (1.0 - alpha) * mse + alpha * fft_term
 
     def _select_criterion(self):
         criterion = nn.MSELoss()
@@ -65,17 +104,7 @@ class Exp_Forecast(Exp_Basic):
                     # only use the forecast window to calculate loss
                     outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
-                if self.args.use_ims:
-                    pred = outputs[:, -self.args.seq_len:, :]
-                    true = batch_y
-                    if flag == 'vali':
-                        loss = criterion(pred, true)
-                    elif flag == 'test':  # in this case, only pred_len is used to calculate loss
-                        pred = pred[:, -self.args.pred_len:, :]
-                        true = true[:, -self.args.pred_len:, :]
-                        loss = criterion(pred, true)
-                else:
-                    loss = criterion(outputs[:, -self.args.pred_len:, :], batch_y[:, -self.args.pred_len:, :])
+                loss = self._finetune_forecast_loss(criterion, outputs, batch_y, flag)
 
                 loss = loss.detach().cpu()
                 total_loss.append(loss)
@@ -104,12 +133,19 @@ class Exp_Forecast(Exp_Basic):
         time_now = time.time()
 
         train_steps = len(finetune_loader)
-        early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
+        early_stopping = EarlyStopping(
+            patience=self.args.patience, verbose=True, local_rank=self.args.local_rank
+        )
+
+        apply_timer_finetune_freeze(self.model, self.args)
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
 
-        print('Model parameters: ', sum(param.numel() for param in self.model.parameters()))
+        _n_all = sum(p.numel() for p in self.model.parameters())
+        _n_tr = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        print("Model parameters (total): ", _n_all)
+        print("Model parameters (trainable): ", _n_tr)
         scheduler = LargeScheduler(self.args, model_optim)
 
 
@@ -137,12 +173,9 @@ class Exp_Forecast(Exp_Basic):
                 else:
                     outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
 
-                if self.args.use_ims:
-                    # output used to calculate loss misaligned patch_len compared to input
-                    loss = criterion(outputs[:, -self.args.seq_len:, :], batch_y)
-                else:
-                    # only use the forecast window to calculate loss
-                    loss = criterion(outputs[:, -self.args.pred_len:, :], batch_y[:, -self.args.pred_len:, :])
+                loss = self._finetune_forecast_loss(
+                    criterion, outputs, batch_y, "vali"
+                )
 
                 loss_val += loss.item()
                 count += 1
@@ -273,6 +306,7 @@ class Exp_Forecast(Exp_Basic):
                             visual(gt, pd, os.path.join(folder_path, f'{i}_{self.args.local_rank}.pdf'))
 
         if self.args.output_len_list is not None:
+            metrics_records = []
             for i in range(len(preds_list)):
                 preds = preds_list[i]
                 trues = trues_list[i]
@@ -288,5 +322,23 @@ class Exp_Forecast(Exp_Basic):
                 f.write('\n')
                 f.write('\n')
                 f.close()
+                metrics_records.append(
+                    {
+                        "output_len": int(self.args.output_len_list[i]),
+                        "mse": float(mse),
+                        "mae": float(mae),
+                    }
+                )
+
+            metrics_path = os.environ.get("FORECAST_TEST_METRICS_JSON", "").strip()
+            if metrics_path and int(os.environ.get("LOCAL_RANK", "0")) == 0:
+                _mdir = os.path.dirname(os.path.abspath(metrics_path))
+                if _mdir:
+                    os.makedirs(_mdir, exist_ok=True)
+                try:
+                    with open(metrics_path, "w", encoding="utf-8") as mf:
+                        json.dump(metrics_records, mf, indent=2)
+                except OSError as e:
+                    print(f"WARNING: could not write FORECAST_TEST_METRICS_JSON={metrics_path}: {e}")
 
         return

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from models import TrmEncoderBackbone
+from models.checkpoint_utils import load_backbone_state_dict
 
 
 class FlattenHead(nn.Module):
@@ -48,10 +49,10 @@ class Model(nn.Module):
             else:
                 print('loading model: ', self.ckpt_path)
                 if self.ckpt_path.endswith('.pth'):
-                    self.backbone.load_state_dict(torch.load(self.ckpt_path))
+                    sd = load_backbone_state_dict(self.ckpt_path, from_lightning_ckpt=False)
+                    self.backbone.load_state_dict(sd, strict=True)
                 elif self.ckpt_path.endswith('.ckpt'):
-                    sd = torch.load(self.ckpt_path, map_location="cpu")["state_dict"]
-                    sd = {k[6:]: v for k, v in sd.items()}
+                    sd = load_backbone_state_dict(self.ckpt_path, from_lightning_ckpt=True)
                     self.backbone.load_state_dict(sd, strict=True)
 
                 else:

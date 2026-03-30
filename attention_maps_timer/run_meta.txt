@@ -1,0 +1,11 @@
+ckpt=checkpoints/Timer_forecast_1.0.ckpt
+n_layers=8
+dec_out_shape=(1, 672, 1)
+layer_0 attn shape (full)=(1, 8, 7, 7)
+layer_1 attn shape (full)=(1, 8, 7, 7)
+layer_2 attn shape (full)=(1, 8, 7, 7)
+layer_3 attn shape (full)=(1, 8, 7, 7)
+layer_4 attn shape (full)=(1, 8, 7, 7)
+layer_5 attn shape (full)=(1, 8, 7, 7)
+layer_6 attn shape (full)=(1, 8, 7, 7)
+layer_7 attn shape (full)=(1, 8, 7, 7)

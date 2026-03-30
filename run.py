@@ -10,7 +10,7 @@ import torch.distributed as dist
 from exp.exp_forecast import Exp_Forecast
 from exp.exp_anomaly_detection import Exp_Anomaly_Detection
 from exp.exp_imputation import Exp_Imputation
-from utils.tools import HiddenPrints
+from utils.tools import HiddenPrints, infer_resonance_period_hours_from_freq
 
 if __name__ == '__main__':
 
@@ -61,7 +61,12 @@ if __name__ == '__main__':
     parser.add_argument('--train_epochs', type=int, default=10, help='train epochs')
     parser.add_argument('--batch_size', type=int, default=32, help='batch size of train input data')
     parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
-    parser.add_argument('--learning_rate', type=float, default=0.0001, help='optimizer learning rate')
+    parser.add_argument(
+        '--learning_rate',
+        type=float,
+        default=1e-4,
+        help='optimizer learning rate (Timer finetune: main group for non-ω/λ params, default 1e-4)',
+    )
     parser.add_argument('--des', type=str, default='test', help='exp description')
     parser.add_argument('--loss', type=str, default='MSE', help='loss function')
     parser.add_argument('--lradj', type=str, default='type1', help='adjust learning rate')
@@ -76,9 +81,95 @@ if __name__ == '__main__':
     parser.add_argument('--stride', type=int, default=1, help='stride')
     parser.add_argument('--ckpt_path', type=str, default='', help='ckpt file')
     parser.add_argument('--finetune_epochs', type=int, default=10, help='train epochs')
+    parser.add_argument(
+        '--finetune_trainable',
+        type=str,
+        default='full',
+        choices=['full', 'last_layer', 'resonance_only', 'last_attention_only'],
+        help='Timer finetune: full=all; last_layer=FFN+norms+inner+proj (Q/K/V/out frozen); '
+        'resonance_only=only ω,λ,φ; last_attention_only=only last .attention (QKV+out+resonance)',
+    )
     parser.add_argument('--local_rank', type=int, default=0, help='local_rank')
 
     parser.add_argument('--patch_len', type=int, default=24, help='input sequence length')
+    parser.add_argument(
+        '--diurnal_attn_bias',
+        type=int,
+        default=0,
+        help='Timer only: 1 = add cos(2*pi*|i-j|/period) bias on selected heads; 0 = off (matches old ckpt)',
+    )
+    parser.add_argument(
+        '--diurnal_lambda',
+        type=float,
+        default=1.0,
+        help='Timer: strength of diurnal cos term (logits get scale*scores + lambda*cos after mask path)',
+    )
+    parser.add_argument(
+        '--diurnal_period',
+        type=float,
+        default=24.0,
+        help='Timer: cos period in patch-token units (e.g. 24 with patch_len=1 stride=1 on hourly data)',
+    )
+    parser.add_argument(
+        '--resonance_last_layer',
+        type=int,
+        default=0,
+        help='Timer: 1 = last-layer learnable cos(2πω(T_i-T_j)+φ) bias per head (needs matching ckpt or finetune)',
+    )
+    parser.add_argument(
+        '--resonance_head_mask',
+        type=str,
+        default='',
+        help='Comma/space-separated 0/1 per head; empty = all heads use resonance',
+    )
+    parser.add_argument(
+        '--resonance_dt_hours',
+        type=float,
+        default=1.0,
+        help='Timer: hours per raw timestep for patch-center physical time T (e.g. 1 for hourly)',
+    )
+    parser.add_argument(
+        '--resonance_lambda_init',
+        type=float,
+        default=0.1,
+        help='Initial per-head resonance strength λ (learnable)',
+    )
+    parser.add_argument(
+        '--resonance_phi_init',
+        type=float,
+        default=0.0,
+        help='Initial per-head phase φ (learnable)',
+    )
+    parser.add_argument(
+        '--resonance_omega_init',
+        type=float,
+        default=None,
+        help='Override ω init; if unset, ω=1/resonance_period_hours (from --resonance_period_hours or --freq)',
+    )
+    parser.add_argument(
+        '--resonance_period_hours',
+        type=float,
+        default=None,
+        help='Physical cycle in hours for ω=1/period when resonance_omega_init unset; None→infer from --freq',
+    )
+    parser.add_argument(
+        '--finetune_res_omega_lr',
+        type=float,
+        default=1e-5,
+        help='Timer finetune: Adam lr for res_omega (scheduler keeps this fixed while main lr decays)',
+    )
+    parser.add_argument(
+        '--finetune_res_lambda_lr',
+        type=float,
+        default=1e-5,
+        help='Timer finetune: Adam lr for res_lambda',
+    )
+    parser.add_argument(
+        '--loss_fft_alpha',
+        type=float,
+        default=0.0,
+        help='Forecast finetune: Total=(1-α)*MSE+α*MAE(rFFT(pred),rFFT(target)); 0=pure MSE',
+    )
     parser.add_argument('--subset_rand_ratio', type=float, default=1, help='mask ratio')
     parser.add_argument('--data_type', type=str, default='custom', help='data_type')
 
@@ -113,6 +204,8 @@ if __name__ == '__main__':
     parser.add_argument('--mask_rate', type=float, default=0.25, help='mask ratio')
 
     args = parser.parse_args()
+    if getattr(args, "resonance_period_hours", None) is None:
+        args.resonance_period_hours = infer_resonance_period_hours_from_freq(args.freq)
     fix_seed = args.seed
     random.seed(fix_seed)
     torch.manual_seed(fix_seed)

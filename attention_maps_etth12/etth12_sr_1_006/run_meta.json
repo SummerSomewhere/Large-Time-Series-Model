@@ -1,0 +1,102 @@
+{
+  "run_id": "etth12_sr_1_006",
+  "run_id_requested": "etth12_sr_1",
+  "run_id_preferred": "etth12_sr_1",
+  "run_dir": "/home/xyh/Large-Time-Series-Model/attention_maps_etth12/etth12_sr_1_006",
+  "data_source": "dataset",
+  "flat_output": false,
+  "reuse_exact_run_id": false,
+  "ckpt_path": "checkpoints/forecast_etth1_sr_1_Timer_ETTh1_ftM_sl96_ll48_pl48_pl1_dm1024_nh8_el8_dl1_df2048_fc3_ebtimeF_dtTrue_Exp26-03-27_11-39-13/checkpoint.pth",
+  "n_layers": 8,
+  "gamma": 0.17,
+  "vmax_quantile": 0.86,
+  "attn_levels": 0,
+  "attn_scale": "linear01",
+  "attn_cmap": "cividis",
+  "test_metrics_json": "./attention_maps_etth12/forecast_test_metrics.json",
+  "arg_root_path": "./datasets/ETT-small/",
+  "arg_data_path": "ETTh1.csv",
+  "arg_data": "ETTh1",
+  "arg_task_name": "forecast",
+  "arg_features": "M",
+  "arg_seq_len": 96,
+  "arg_label_len": 48,
+  "arg_pred_len": 48,
+  "arg_output_len": 48,
+  "arg_patch_len": 1,
+  "arg_d_model": 1024,
+  "arg_d_ff": 2048,
+  "arg_e_layers": 8,
+  "arg_n_heads": 8,
+  "arg_factor": 3,
+  "arg_dropout": 0.1,
+  "arg_activation": "gelu",
+  "arg_embed": "timeF",
+  "arg_freq": "h",
+  "arg_stride": 1,
+  "arg_subset_rand_ratio": 1.0,
+  "arg_use_ims": true,
+  "arg_output_dir": "./attention_maps_etth12",
+  "arg_batch_index": 0,
+  "arg_batch_eff_index": 0,
+  "arg_dpi": 160,
+  "arg_gpu": 0,
+  "arg_synthetic_sin": false,
+  "arg_sin_n_vars": 1,
+  "arg_sin_batch_size": 1,
+  "arg_sin_base_period": 1.0,
+  "arg_sin_noise_std": 0.0,
+  "arg_sin_seed": null,
+  "arg_diurnal_attn_bias": 0,
+  "arg_diurnal_lambda": 0.05,
+  "arg_diurnal_period": 24.0,
+  "layer_0_attn_shape": [
+    1,
+    8,
+    96,
+    96
+  ],
+  "layer_1_attn_shape": [
+    1,
+    8,
+    96,
+    96
+  ],
+  "layer_2_attn_shape": [
+    1,
+    8,
+    96,
+    96
+  ],
+  "layer_3_attn_shape": [
+    1,
+    8,
+    96,
+    96
+  ],
+  "layer_4_attn_shape": [
+    1,
+    8,
+    96,
+    96
+  ],
+  "layer_5_attn_shape": [
+    1,
+    8,
+    96,
+    96
+  ],
+  "layer_6_attn_shape": [
+    1,
+    8,
+    96,
+    96
+  ],
+  "layer_7_attn_shape": [
+    1,
+    8,
+    96,
+    96
+  ],
+  "summary_png": "all_layers_all_heads_summary.png"
+}

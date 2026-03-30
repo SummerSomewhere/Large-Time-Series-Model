@@ -1,0 +1,104 @@
+{
+  "run_id": "run_20260327_070439_346635",
+  "run_id_requested": null,
+  "run_id_preferred": "run_20260327_070439_346635",
+  "run_dir": "/home/xyh/Large-Time-Series-Model/attention_maps_timer/run_20260327_070439_346635",
+  "data_source": "synthetic_sin",
+  "flat_output": false,
+  "reuse_exact_run_id": false,
+  "ckpt_path": "checkpoints/Timer_forecast_1.0.ckpt",
+  "n_layers": 8,
+  "dec_out_shape": [
+    1,
+    672,
+    1
+  ],
+  "gamma": 0.36,
+  "vmax_quantile": 0.99,
+  "attn_cmap": "cividis",
+  "forecast_mse": 0.0749230831861496,
+  "forecast_mae": 0.24022002518177032,
+  "forecast_metrics_note": "",
+  "arg_root_path": "./datasets/ETT-small/",
+  "arg_data_path": "ETTh1.csv",
+  "arg_data": "ETTh1",
+  "arg_task_name": "forecast",
+  "arg_features": "M",
+  "arg_seq_len": 672,
+  "arg_label_len": 576,
+  "arg_pred_len": 96,
+  "arg_output_len": 96,
+  "arg_patch_len": 96,
+  "arg_d_model": 1024,
+  "arg_d_ff": 2048,
+  "arg_e_layers": 8,
+  "arg_n_heads": 8,
+  "arg_factor": 3,
+  "arg_dropout": 0.1,
+  "arg_activation": "gelu",
+  "arg_embed": "timeF",
+  "arg_freq": "h",
+  "arg_stride": 1,
+  "arg_subset_rand_ratio": 1.0,
+  "arg_use_ims": true,
+  "arg_output_dir": "./attention_maps_timer",
+  "arg_batch_index": 0,
+  "arg_batch_eff_index": 0,
+  "arg_dpi": 160,
+  "arg_gpu": 0,
+  "arg_synthetic_sin": true,
+  "arg_sin_n_vars": 1,
+  "arg_sin_batch_size": 1,
+  "arg_sin_base_period": 1.0,
+  "arg_sin_noise_std": 0.0,
+  "arg_sin_seed": null,
+  "layer_0_attn_shape": [
+    1,
+    8,
+    7,
+    7
+  ],
+  "layer_1_attn_shape": [
+    1,
+    8,
+    7,
+    7
+  ],
+  "layer_2_attn_shape": [
+    1,
+    8,
+    7,
+    7
+  ],
+  "layer_3_attn_shape": [
+    1,
+    8,
+    7,
+    7
+  ],
+  "layer_4_attn_shape": [
+    1,
+    8,
+    7,
+    7
+  ],
+  "layer_5_attn_shape": [
+    1,
+    8,
+    7,
+    7
+  ],
+  "layer_6_attn_shape": [
+    1,
+    8,
+    7,
+    7
+  ],
+  "layer_7_attn_shape": [
+    1,
+    8,
+    7,
+    7
+  ],
+  "summary_png": "all_layers_all_heads_summary.png"
+}

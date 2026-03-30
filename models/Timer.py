@@ -2,6 +2,7 @@ import torch
 from torch import nn
 
 from models import TimerBackbone
+from models.checkpoint_utils import load_backbone_state_dict
 
 
 class Model(nn.Module):
@@ -31,6 +32,8 @@ class Model(nn.Module):
         self.dropout = configs.dropout
 
         self.output_attention = configs.output_attention
+        self.resonance_last_layer = bool(getattr(configs, "resonance_last_layer", 0))
+        self.resonance_dt_hours = float(getattr(configs, "resonance_dt_hours", 1.0))
 
         self.backbone = TimerBackbone.Model(configs)
         # Decoder
@@ -44,15 +47,47 @@ class Model(nn.Module):
                 print('loading model randomly')
             else:
                 print('loading model: ', self.ckpt_path)
+                # Pretrained Timer ckpts have no last-layer resonance params; strict=False keeps finetune working.
+                strict_load = not self.resonance_last_layer
+                if not strict_load:
+                    print(
+                        'Note: strict=False (resonance_last_layer=1): ω/λ/φ and mask init from module; '
+                        'other weights loaded from checkpoint.'
+                    )
                 if self.ckpt_path.endswith('.pth'):
-                    self.backbone.load_state_dict(torch.load(self.ckpt_path))
+                    sd = load_backbone_state_dict(self.ckpt_path, from_lightning_ckpt=False)
+                    self.backbone.load_state_dict(sd, strict=strict_load)
                 elif self.ckpt_path.endswith('.ckpt'):
-                    sd = torch.load(self.ckpt_path, map_location="cpu")["state_dict"]
-                    sd = {k[6:]: v for k, v in sd.items()}
-                    self.backbone.load_state_dict(sd, strict=True)
+                    sd = load_backbone_state_dict(self.ckpt_path, from_lightning_ckpt=True)
+                    self.backbone.load_state_dict(sd, strict=strict_load)
 
                 else:
                     raise NotImplementedError
+
+    def _patch_center_physical_timestamps(self, batch_size, seq_len, n_vars, dtype, device):
+        """
+        Physical time at each patch center: T_p = (p*stride + (patch_len-1)/2) * dt_hours.
+        Monotonic in p; matches cos(2πω|T_i-T_j|+φ) on the causal lower triangle when time increases with index.
+        Returns [B * n_vars, N] or None if resonance is off.
+        """
+        if not self.resonance_last_layer:
+            return None
+        pe = self.enc_embedding
+        patch_len = float(pe.patch_len)
+        stride = float(pe.stride)
+        pad = pe.padding_patch_layer.padding
+        pad_r = pad[-1] if isinstance(pad, tuple) and len(pad) >= 2 else 0
+        L = seq_len
+        L_pad = L + pad_r
+        if L_pad < pe.patch_len:
+            return None
+        N = (L_pad - pe.patch_len) // pe.stride + 1
+        dt = self.resonance_dt_hours
+        p_idx = torch.arange(N, device=device, dtype=torch.float64)
+        centers = (p_idx * stride + 0.5 * (patch_len - 1.0)) * dt
+        centers = centers.to(dtype=dtype).unsqueeze(0).expand(batch_size, n_vars, N)
+        centers = centers.reshape(batch_size * n_vars, N)
+        return centers
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         B, L, M = x_enc.shape
@@ -67,8 +102,12 @@ class Model(nn.Module):
         x_enc = x_enc.permute(0, 2, 1) # [B, M, T]
         dec_in, n_vars = self.enc_embedding(x_enc) # [B * M, N, D]
 
-        # Transformer Blocks
-        dec_out, attns = self.decoder(dec_in) # [B * M, N, D]
+        phys_t = self._patch_center_physical_timestamps(
+            B, L, n_vars, dec_in.dtype, dec_in.device
+        )
+
+        # Transformer Blocks (diurnal on inner layers; last layer optional resonance bias)
+        dec_out, attns = self.decoder(dec_in, physical_timestamps=phys_t) # [B * M, N, D]
         dec_out = self.proj(dec_out) # [B * M, N, L]
         dec_out = dec_out.reshape(B, M, -1).transpose(1, 2) # [B, T, M]
 
@@ -94,8 +133,12 @@ class Model(nn.Module):
         x_enc = x_enc.permute(0, 2, 1) # [B, M, T]
         dec_in, n_vars = self.enc_embedding(x_enc) # [B * M, N, D]
 
+        phys_t = self._patch_center_physical_timestamps(
+            B, L, n_vars, dec_in.dtype, dec_in.device
+        )
+
         # Transformer Blocks
-        dec_out, attns = self.decoder(dec_in) # [B * M, N, D]
+        dec_out, attns = self.decoder(dec_in, physical_timestamps=phys_t) # [B * M, N, D]
         dec_out = self.proj(dec_out) # [B * M, N, L]
         dec_out = dec_out.reshape(B, M, -1).transpose(1, 2) # [B, T, M]
 
@@ -116,8 +159,12 @@ class Model(nn.Module):
         x_enc = x_enc.permute(0, 2, 1) # [B, M, T]
         dec_in, n_vars = self.enc_embedding(x_enc) # [B * M, N, D]
 
+        phys_t = self._patch_center_physical_timestamps(
+            B, L, n_vars, dec_in.dtype, dec_in.device
+        )
+
         # Transformer Blocks
-        dec_out, attns = self.decoder(dec_in) # [B * M, N, D]
+        dec_out, attns = self.decoder(dec_in, physical_timestamps=phys_t) # [B * M, N, D]
         dec_out = self.proj(dec_out) # [B * M, N, L]
         dec_out = dec_out.reshape(B, M, -1).transpose(1, 2) # [B, T, M]
 
