@@ -60,7 +60,7 @@ class Exp_Forecast(Exp_Basic):
         return model_optim
 
     def _finetune_forecast_loss(self, criterion, outputs, batch_y, flag: str):
-        """(1-α)*MSE + α*MAE(rFFT) on forecast (or IMS) window (TimeEmb-style mix)."""
+        """TimeEmb-style: (1-α)*MSE + α*mean(|rFFT(pred)-rFFT(target)|) (complex coeff MAE)."""
         alpha = float(getattr(self.args, "loss_fft_alpha", 0.0))
         if self.args.use_ims:
             pred = outputs[:, -self.args.seq_len:, :]

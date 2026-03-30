@@ -359,7 +359,7 @@ def build_timer_finetune_param_groups(model, args):
     for name, p in m.named_parameters():
         if not p.requires_grad:
             continue
-        if name.endswith("res_omega"):
+        if name.endswith("res_omega") or "har_omega_raw" in name:
             omega_p.append(p)
         elif name.endswith("res_lambda"):
             lambda_p.append(p)
@@ -409,6 +409,7 @@ def apply_timer_finetune_freeze(model, args) -> None:
         AttentionLayer stay frozen (no query/key/value/out_projection grads).
       - resonance_only: freeze entire backbone; only train res_omega, res_lambda, res_phi on last inner_attention.
       - last_attention_only: freeze entire backbone except last EncoderLayer.attention (Q/K/V/out + resonance inner).
+      - harmonic_proj: train only harmonic gated inner_attention + backbone.proj (needs harmonic_gated_resonance=1).
     """
     mode = getattr(args, "finetune_trainable", "full")
     if mode is None or mode == "full":
@@ -446,6 +447,14 @@ def apply_timer_finetune_freeze(model, args) -> None:
             raise ValueError("finetune_trainable=last_attention_only requires resonance_last_layer=1")
         last = m.backbone.decoder.attn_layers[-1]
         for p in last.attention.parameters():
+            p.requires_grad = True
+    elif mode == "harmonic_proj":
+        if not int(getattr(args, "harmonic_gated_resonance", 0)):
+            raise ValueError("finetune_trainable=harmonic_proj requires harmonic_gated_resonance=1")
+        inner = m.backbone.decoder.attn_layers[-1].attention.inner_attention
+        for p in inner.parameters():
+            p.requires_grad = True
+        for p in m.backbone.proj.parameters():
             p.requires_grad = True
     else:
         raise ValueError(f"Unknown finetune_trainable={mode!r}")

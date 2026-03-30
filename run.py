@@ -85,9 +85,15 @@ if __name__ == '__main__':
         '--finetune_trainable',
         type=str,
         default='full',
-        choices=['full', 'last_layer', 'resonance_only', 'last_attention_only'],
-        help='Timer finetune: full=all; last_layer=FFN+norms+inner+proj (Q/K/V/out frozen); '
-        'resonance_only=only ω,λ,φ; last_attention_only=only last .attention (QKV+out+resonance)',
+        choices=[
+            'full',
+            'last_layer',
+            'resonance_only',
+            'last_attention_only',
+            'harmonic_proj',
+        ],
+        help='Timer: full; last_layer; resonance_only; last_attention_only; '
+        'harmonic_proj=harmonic inner + proj only (needs harmonic_gated_resonance=1)',
     )
     parser.add_argument('--local_rank', type=int, default=0, help='local_rank')
 
@@ -114,7 +120,37 @@ if __name__ == '__main__':
         '--resonance_last_layer',
         type=int,
         default=0,
-        help='Timer: 1 = last-layer learnable cos(2πω(T_i-T_j)+φ) bias per head (needs matching ckpt or finetune)',
+        help='Timer: 1 = legacy last-layer multi-head resonance (ignored if harmonic_gated_resonance=1)',
+    )
+    parser.add_argument(
+        '--harmonic_gated_resonance',
+        type=int,
+        default=0,
+        help='Timer: 1 = harmonic gated specialist head (α·QK+(1-α)·bias)⊗σ(gate), K harmonics, O(L) trig',
+    )
+    parser.add_argument(
+        '--harmonic_specialist_head',
+        type=int,
+        default=0,
+        help='Head index (0..n_heads-1) for harmonic gated specialist; other heads vanilla',
+    )
+    parser.add_argument(
+        '--harmonic_n_harmonics',
+        type=int,
+        default=3,
+        help='Number of harmonics ω,2ω,.. in specialist bias/gate',
+    )
+    parser.add_argument(
+        '--harmonic_lambda_init',
+        type=float,
+        default=1e-4,
+        help='Initial |λ_k| per harmonic (strength warmup; multiplicative gate only)',
+    )
+    parser.add_argument(
+        '--harmonic_fft_warmstart',
+        type=int,
+        default=1,
+        help='Timer: 1 = first training batch sets ω from rFFT peak on raw series (harmonic only)',
     )
     parser.add_argument(
         '--resonance_head_mask',

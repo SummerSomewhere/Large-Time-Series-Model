@@ -33,7 +33,10 @@ class Model(nn.Module):
 
         self.output_attention = configs.output_attention
         self.resonance_last_layer = bool(getattr(configs, "resonance_last_layer", 0))
+        self.harmonic_gated_resonance = bool(getattr(configs, "harmonic_gated_resonance", 0))
+        self.harmonic_fft_warmstart = bool(int(getattr(configs, "harmonic_fft_warmstart", 1)))
         self.resonance_dt_hours = float(getattr(configs, "resonance_dt_hours", 1.0))
+        self._harmonic_fft_warmed = False
 
         self.backbone = TimerBackbone.Model(configs)
         # Decoder
@@ -47,12 +50,12 @@ class Model(nn.Module):
                 print('loading model randomly')
             else:
                 print('loading model: ', self.ckpt_path)
-                # Pretrained Timer ckpts have no last-layer resonance params; strict=False keeps finetune working.
-                strict_load = not self.resonance_last_layer
+                # Pretrained / mismatched last-layer heads need strict=False.
+                strict_load = not (self.resonance_last_layer or self.harmonic_gated_resonance)
                 if not strict_load:
                     print(
-                        'Note: strict=False (resonance_last_layer=1): ω/λ/φ and mask init from module; '
-                        'other weights loaded from checkpoint.'
+                        'Note: strict=False (resonance or harmonic last layer): extra head params init from module; '
+                        'matching keys loaded from checkpoint.'
                     )
                 if self.ckpt_path.endswith('.pth'):
                     sd = load_backbone_state_dict(self.ckpt_path, from_lightning_ckpt=False)
@@ -68,9 +71,9 @@ class Model(nn.Module):
         """
         Physical time at each patch center: T_p = (p*stride + (patch_len-1)/2) * dt_hours.
         Monotonic in p; matches cos(2πω|T_i-T_j|+φ) on the causal lower triangle when time increases with index.
-        Returns [B * n_vars, N] or None if resonance is off.
+        Returns [B * n_vars, N] or None if resonance / harmonic is off.
         """
-        if not self.resonance_last_layer:
+        if not self.resonance_last_layer and not self.harmonic_gated_resonance:
             return None
         pe = self.enc_embedding
         patch_len = float(pe.patch_len)
@@ -89,8 +92,23 @@ class Model(nn.Module):
         centers = centers.reshape(batch_size * n_vars, N)
         return centers
 
+    def _maybe_harmonic_fft_warmstart(self, x_enc: torch.Tensor) -> None:
+        """First training forward: set specialist omega from batch rFFT (raw scale, before norm)."""
+        if not self.harmonic_gated_resonance or not self.harmonic_fft_warmstart:
+            return
+        if self._harmonic_fft_warmed or not self.training:
+            return
+        inner = self.backbone.decoder.attn_layers[-1].attention.inner_attention
+        fn = getattr(inner, "fft_warmstart_omega", None)
+        if fn is None:
+            return
+        series = x_enc.mean(dim=-1).detach()
+        inner.fft_warmstart_omega(series, self.resonance_dt_hours)
+        self._harmonic_fft_warmed = True
+
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         B, L, M = x_enc.shape
+        self._maybe_harmonic_fft_warmstart(x_enc)
 
         # Normalization from Non-stationary Transformer
         means = x_enc.mean(1, keepdim=True).detach()
@@ -119,6 +137,7 @@ class Model(nn.Module):
 
     def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
         B, L, M = x_enc.shape
+        self._maybe_harmonic_fft_warmstart(x_enc)
         # Normalization from Non-stationary Transformer
         means = torch.sum(x_enc, dim=1) / torch.sum(mask == 1, dim=1)
         means = means.unsqueeze(1).detach()
@@ -148,6 +167,7 @@ class Model(nn.Module):
 
     def anomaly_detection(self, x_enc):
         B, L, M = x_enc.shape
+        self._maybe_harmonic_fft_warmstart(x_enc)
 
         # Normalization from Non-stationary Transformer
         means = x_enc.mean(1, keepdim=True).detach()

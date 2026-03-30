@@ -5,6 +5,7 @@ from layers.Embed import PatchEmbedding
 from layers.SelfAttention_Family import (
     AttentionLayer,
     FullAttention,
+    FullAttentionHarmonicGatedResonance,
     FullAttentionLastLayerResonance,
 )
 from layers.Transformer_EncDec import Encoder, EncoderLayer
@@ -47,6 +48,7 @@ class Model(nn.Module):
         diurnal_heads_per_layer = [_diurnal_heads(l) for l in range(configs.e_layers)]
 
         resonance_on = bool(getattr(configs, "resonance_last_layer", 0))
+        harmonic_on = bool(getattr(configs, "harmonic_gated_resonance", 0))
         n_heads = configs.n_heads
         last_idx = configs.e_layers - 1
 
@@ -78,6 +80,18 @@ class Model(nn.Module):
         phi_init = float(getattr(configs, "resonance_phi_init", 0.0))
 
         def _make_attention(layer_idx: int):
+            if harmonic_on and layer_idx == last_idx:
+                return FullAttentionHarmonicGatedResonance(
+                    True,
+                    configs.factor,
+                    attention_dropout=configs.dropout,
+                    output_attention=True,
+                    n_heads=n_heads,
+                    specialist_head_idx=int(getattr(configs, "harmonic_specialist_head", 0)),
+                    n_harmonics=int(getattr(configs, "harmonic_n_harmonics", 3)),
+                    omega_init=omega_init,
+                    lambda_init=float(getattr(configs, "harmonic_lambda_init", 1e-4)),
+                )
             if resonance_on and layer_idx == last_idx:
                 return FullAttentionLastLayerResonance(
                     True,
