@@ -140,6 +140,51 @@ if __name__ == '__main__':
     parser.add_argument('--label_len', type=int, default=48, help='start token length')
     parser.add_argument('--pred_len', type=int, default=96, help='prediction sequence length')
 
+    # Timer: MI-guided representation recycle (forecast only) — isolated second TF on selected patches
+    parser.add_argument(
+        '--recycle_encoder_layers',
+        type=str,
+        default='',
+        help='Timer: comma-separated 0-based layers for recycle (e.g. 0,7). Empty + single -1 uses last layer only.',
+    )
+    parser.add_argument(
+        '--recycle_encoder_layer',
+        type=int,
+        default=-1,
+        help='Timer: single layer index if recycle_encoder_layers empty; -1 disables',
+    )
+    parser.add_argument(
+        '--recycle_patch_indices',
+        type=str,
+        default='',
+        help='Timer: comma-separated input patch indices when no npy (e.g. 3 or 2,3)',
+    )
+    parser.add_argument(
+        '--recycle_hsic_mean_npy',
+        type=str,
+        default='',
+        help='Timer: optional hsic_mean.npy [L,T]; at layer l use row l for peak patches (else manual list)',
+    )
+    parser.add_argument(
+        '--recycle_peak_mode',
+        type=str,
+        default='tukey',
+        choices=['tukey', 'mean_iqr'],
+        help='Timer: tukey=Q3+1.5*IQR; mean_iqr=mean+1.5*IQR on patch MI curve',
+    )
+    parser.add_argument(
+        '--recycle_alpha',
+        type=float,
+        default=0.05,
+        help='Timer: if recycle_round_alphas empty, one round uses this alpha',
+    )
+    parser.add_argument(
+        '--recycle_round_alphas',
+        type=str,
+        default='',
+        help='Timer: comma-separated alphas for successive rounds per patch (e.g. 0.4,0.2)',
+    )
+
     # imputation task
     parser.add_argument('--mask_rate', type=float, default=0.25, help='mask ratio')
 

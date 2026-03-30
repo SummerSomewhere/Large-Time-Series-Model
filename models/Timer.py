@@ -1,5 +1,7 @@
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from models import TimerBackbone
 from models.checkpoint_utils import load_backbone_state_dict
@@ -70,6 +72,134 @@ class Model(nn.Module):
                 else:
                     raise NotImplementedError
 
+        # Lightweight representation recycle (forecast only): at listed encoder layers, for each
+        # selected patch run K rounds: h <- h + alpha_k * (TF_l(h) - h) on length-1 seq, then
+        # F.layer_norm on that row (before stack final norm).
+        self.recycle_encoder_layer = int(getattr(configs, "recycle_encoder_layer", -1))
+        _rls = str(getattr(configs, "recycle_encoder_layers", "") or "").strip()
+        self.recycle_encoder_layers: list[int] = []
+        if _rls:
+            for s in _rls.replace(",", " ").split():
+                s = s.strip()
+                if not s:
+                    continue
+                try:
+                    self.recycle_encoder_layers.append(int(s))
+                except ValueError:
+                    pass
+            self.recycle_encoder_layers = sorted(set(self.recycle_encoder_layers))
+        elif self.recycle_encoder_layer >= 0:
+            self.recycle_encoder_layers = [self.recycle_encoder_layer]
+
+        _rp = getattr(configs, "recycle_patch_indices", "") or ""
+        if isinstance(_rp, str) and _rp.strip():
+            self._recycle_patch_indices_cfg = []
+            for s in _rp.replace(",", " ").split():
+                s = s.strip()
+                if not s:
+                    continue
+                try:
+                    self._recycle_patch_indices_cfg.append(int(s))
+                except ValueError:
+                    pass
+        elif isinstance(_rp, (list, tuple)):
+            self._recycle_patch_indices_cfg = [int(x) for x in _rp]
+        else:
+            self._recycle_patch_indices_cfg = []
+        self.recycle_hsic_mean_npy = str(getattr(configs, "recycle_hsic_mean_npy", "") or "").strip()
+        # tukey: Q3 + 1.5*IQR (same as MI experiment iqr_peak_mask); mean_iqr: mean + 1.5*IQR along patches
+        self.recycle_peak_mode = str(getattr(configs, "recycle_peak_mode", "tukey")).lower()
+        self._recycle_hsic_arr: np.ndarray | None = None
+        if self.recycle_hsic_mean_npy:
+            self._recycle_hsic_arr = np.load(self.recycle_hsic_mean_npy)
+
+        self.recycle_alpha = float(getattr(configs, "recycle_alpha", 0.05))
+        _ras = str(getattr(configs, "recycle_round_alphas", "") or "").strip()
+        self.recycle_round_alphas: list[float] = []
+        if _ras:
+            for s in _ras.replace(",", " ").split():
+                s = s.strip()
+                if not s:
+                    continue
+                try:
+                    self.recycle_round_alphas.append(float(s))
+                except ValueError:
+                    pass
+        if not self.recycle_round_alphas:
+            self.recycle_round_alphas = [self.recycle_alpha]
+
+        self._recycle_wants_active = bool(
+            self.recycle_encoder_layer >= 0
+            or self.recycle_encoder_layers
+            or self._recycle_patch_indices_cfg
+            or self._recycle_hsic_arr is not None
+        )
+
+    def _recycle_patch_indices_for_layer(self, n_patches: int, layer_idx: int) -> list[int]:
+        """
+        Patch indices to recycle at encoder layer layer_idx.
+        If hsic_mean.npy is set, use row layer_idx for peak detection; else use configured list.
+        """
+        indices: list[int] = []
+        if self._recycle_hsic_arr is not None:
+            arr = self._recycle_hsic_arr
+            if arr.ndim == 2 and 0 <= layer_idx < arr.shape[0]:
+                row = np.asarray(arr[layer_idx], dtype=np.float64).ravel()
+                finite = row[np.isfinite(row)]
+                if finite.size >= 2:
+                    q1, q3 = np.percentile(finite, [25, 75])
+                    iqr = q3 - q1
+                    if self.recycle_peak_mode == "mean_iqr":
+                        mu = float(np.mean(finite))
+                        thresh = mu + 1.5 * iqr
+                    else:
+                        thresh = q3 + 1.5 * iqr
+                    mask = np.logical_and(np.isfinite(row), row > thresh)
+                    indices = np.where(mask)[0].tolist()
+        if not indices and self._recycle_patch_indices_cfg:
+            indices = list(self._recycle_patch_indices_cfg)
+        return [i for i in indices if 0 <= i < n_patches]
+
+    def _decoder_forward_with_optional_recycle(self, x: torch.Tensor) -> tuple[torch.Tensor, list]:
+        """
+        Encoder forward; lightweight recycle on configured layers (e.g. first + last):
+        for each round alpha_k: h <- h + alpha_k * (TF_l(h) - h), then F.layer_norm(h, (D,)).
+        """
+        if not self._recycle_wants_active:
+            return self.decoder(x)
+
+        n_enc = len(self.decoder.attn_layers)
+        last_i = n_enc - 1
+        if self.recycle_encoder_layers:
+            layer_set = frozenset(i for i in self.recycle_encoder_layers if 0 <= i < n_enc)
+        elif 0 <= self.recycle_encoder_layer < n_enc:
+            layer_set = frozenset([self.recycle_encoder_layer])
+        else:
+            layer_set = frozenset()
+        if not layer_set:
+            layer_set = frozenset([last_i])
+
+        d_model = x.shape[-1]
+        norm_eps = self.decoder.norm.eps if self.decoder.norm is not None else 1e-5
+        alphas = self.recycle_round_alphas
+
+        attns = []
+        for i, layer in enumerate(self.decoder.attn_layers):
+            x, attn = layer(x)
+            attns.append(attn)
+            if i in layer_set:
+                patch_idx = self._recycle_patch_indices_for_layer(x.shape[1], i)
+                for pi in patch_idx:
+                    for alpha in alphas:
+                        seg = x[:, pi : pi + 1, :].contiguous()
+                        h = seg[:, 0, :]
+                        h_tf, _ = layer(seg)
+                        h_final = h + alpha * (h_tf[:, 0, :] - h)
+                        x[:, pi, :] = F.layer_norm(h_final, (d_model,), eps=norm_eps)
+        if self.decoder.norm is not None:
+            x = self.decoder.norm(x)
+        return x, attns
+
     def _apply_periodic_residual(
         self,
         dec_out: torch.Tensor,
@@ -122,7 +252,7 @@ class Model(nn.Module):
         x_enc = x_enc.permute(0, 2, 1)
         dec_in, n_vars = self.enc_embedding(x_enc)
 
-        dec_out, attns = self.decoder(dec_in)
+        dec_out, attns = self._decoder_forward_with_optional_recycle(dec_in)
         dec_out = self._apply_periodic_residual(dec_out, x_mark_enc, B, L, n_vars)
         dec_out = self.proj(dec_out)
         dec_out = dec_out.reshape(B, M, -1).transpose(1, 2)

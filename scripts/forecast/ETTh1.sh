@@ -13,7 +13,7 @@ pred_len=96
 output_len=96
 patch_len=96
 ckpt_path=checkpoints/Timer_forecast_1.0.ckpt
-data=ETTh2
+data=ETTh1
 
 for subset_rand_ratio in  1
 do

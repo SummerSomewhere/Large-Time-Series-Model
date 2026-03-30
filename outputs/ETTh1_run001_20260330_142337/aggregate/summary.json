@@ -1,0 +1,95 @@
+{
+  "meta": {
+    "arxiv_ref": "2506.02867",
+    "hsic_formula": "tr(Kx H Ky H) / (n-1)^2",
+    "kernel": "gaussian_median_heuristic",
+    "n_batches": 80,
+    "n_samples_written": 10,
+    "n_layers": 8,
+    "n_patches": 1,
+    "batch_size": 32,
+    "patch_len": 96,
+    "stride": 96,
+    "seq_len": 672,
+    "pred_horizon": 96,
+    "use_ims": true,
+    "run_id": 1,
+    "ckpt_path": "checkpoints/Timer_forecast_1.0.ckpt",
+    "aggregate_dir": "./outputs/mi_hsic_timer/ETTh1_run001_20260330_142337/aggregate",
+    "samples_dir": "./outputs/mi_hsic_timer/ETTh1_run001_20260330_142337/samples"
+  },
+  "per_layer": [
+    {
+      "layer": 0,
+      "mi_proxy_mean_over_patches": 0.017062649480067194,
+      "mi_proxy_std_over_patches": 0.0,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 1,
+      "mi_proxy_mean_over_patches": 0.016296822228468955,
+      "mi_proxy_std_over_patches": 0.0,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 2,
+      "mi_proxy_mean_over_patches": 0.016079509863629937,
+      "mi_proxy_std_over_patches": 0.0,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 3,
+      "mi_proxy_mean_over_patches": 0.016034611267969012,
+      "mi_proxy_std_over_patches": 0.0,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 4,
+      "mi_proxy_mean_over_patches": 0.016137313283979892,
+      "mi_proxy_std_over_patches": 0.0,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 5,
+      "mi_proxy_mean_over_patches": 0.015811811480671168,
+      "mi_proxy_std_over_patches": 0.0,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 6,
+      "mi_proxy_mean_over_patches": 0.01618563608499244,
+      "mi_proxy_std_over_patches": 0.0,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 7,
+      "mi_proxy_mean_over_patches": 0.018211581569630653,
+      "mi_proxy_std_over_patches": 0.0,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    }
+  ]
+}

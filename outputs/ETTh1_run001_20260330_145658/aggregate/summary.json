@@ -1,0 +1,98 @@
+{
+  "meta": {
+    "arxiv_ref": "2506.02867",
+    "hsic_formula": "tr(Kx H Ky H) / (n-1)^2",
+    "kernel": "gaussian_median_heuristic",
+    "n_batches": 80,
+    "n_samples_written": 100,
+    "n_layers": 8,
+    "n_input_patches_mi": 7,
+    "pairing": "For each history patch t: HSIC(h_x^l[t], z_y^l) with z_y = concat of future patch tokens (no mean)",
+    "batch_size": 32,
+    "patch_len": 96,
+    "stride": 96,
+    "seq_len": 672,
+    "pred_horizon": 96,
+    "use_ims": true,
+    "run_id": 1,
+    "ckpt_path": "checkpoints/Timer_forecast_1.0.ckpt",
+    "aggregate_dir": "./outputs/mi_hsic_timer/ETTh1_run001_20260330_145658/aggregate",
+    "samples_dir": "./outputs/mi_hsic_timer/ETTh1_run001_20260330_145658/samples"
+  },
+  "per_layer": [
+    {
+      "layer": 0,
+      "mi_proxy_mean_over_patches": 0.017111589614900627,
+      "mi_proxy_std_over_patches": 0.00016984542469887563,
+      "iqr_threshold": 0.0176618717960082,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 1,
+      "mi_proxy_mean_over_patches": 0.01653067274518045,
+      "mi_proxy_std_over_patches": 0.0001450159183479586,
+      "iqr_threshold": 0.01697696445917245,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 2,
+      "mi_proxy_mean_over_patches": 0.01631780821563942,
+      "mi_proxy_std_over_patches": 0.00013122426728196044,
+      "iqr_threshold": 0.01675450786424335,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 3,
+      "mi_proxy_mean_over_patches": 0.016399726735627545,
+      "mi_proxy_std_over_patches": 0.00010808420954233996,
+      "iqr_threshold": 0.016812588693574076,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 4,
+      "mi_proxy_mean_over_patches": 0.01654744502988511,
+      "mi_proxy_std_over_patches": 0.00010144404941161888,
+      "iqr_threshold": 0.01693480926041957,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 5,
+      "mi_proxy_mean_over_patches": 0.016419259087914334,
+      "mi_proxy_std_over_patches": 0.00010506671267079209,
+      "iqr_threshold": 0.016676547052338717,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 6,
+      "mi_proxy_mean_over_patches": 0.01676199117043455,
+      "mi_proxy_std_over_patches": 9.900512211160686e-05,
+      "iqr_threshold": 0.0169799608469475,
+      "peak_indices": [],
+      "peak_strength_max": null,
+      "peak_strength_mean": null
+    },
+    {
+      "layer": 7,
+      "mi_proxy_mean_over_patches": 0.01857058579501297,
+      "mi_proxy_std_over_patches": 8.110677939737706e-05,
+      "iqr_threshold": 0.01865899606491439,
+      "peak_indices": [
+        6
+      ],
+      "peak_strength_max": 0.01875262998510152,
+      "peak_strength_mean": 0.01875262998510152
+    }
+  ]
+}
