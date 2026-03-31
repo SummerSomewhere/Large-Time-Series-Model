@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import time
@@ -14,6 +16,7 @@ from data_provider.data_factory import data_provider
 from exp.exp_basic import Exp_Basic
 from utils.metrics import metric
 from utils.tools import (
+    BetaScheduler,
     EarlyStopping,
     apply_timer_finetune_freeze,
     attn_map,
@@ -83,7 +86,26 @@ class Exp_Forecast(Exp_Basic):
         criterion = nn.MSELoss()
         return criterion
 
-    def vali(self, vali_data, vali_loader, criterion, epoch=0, flag='vali'):
+    def _timer_vib_active(self) -> bool:
+        return getattr(self.args, "model", None) == "Timer" and int(getattr(self.args, "timer_vib", 0))
+
+    def _forward_forecast(self, batch_x, batch_x_mark, dec_inp, batch_y_mark, return_vib_kl: bool = False):
+        """Returns (outputs, vib_kl_or_none, attns_or_none). attns only if output_attention."""
+        if not self._timer_vib_active() or not return_vib_kl:
+            if self.args.output_attention:
+                out = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                return out[0], None, out[1]
+            out = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+            return out, None, None
+        if self.args.output_attention:
+            dec_out, attns, vib_kl = self.model(
+                batch_x, batch_x_mark, dec_inp, batch_y_mark, return_vib_kl=True
+            )
+            return dec_out, vib_kl, attns
+        dec_out, vib_kl = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark, return_vib_kl=True)
+        return dec_out, vib_kl, None
+
+    def vali(self, vali_data, vali_loader, criterion, epoch=0, flag='vali', vib_beta: float | None = None):
         total_loss = []
         total_count = []
         self.model.eval()
@@ -97,14 +119,14 @@ class Exp_Forecast(Exp_Basic):
 
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float()
-                if self.args.output_attention:
-                    # output used to calculate loss misaligned patch_len compared to input
-                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
-                else:
-                    # only use the forecast window to calculate loss
-                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                outputs, vib_kl, _ = self._forward_forecast(
+                    batch_x, batch_x_mark, dec_inp, batch_y_mark,
+                    return_vib_kl=self._timer_vib_active(),
+                )
 
                 loss = self._finetune_forecast_loss(criterion, outputs, batch_y, flag)
+                if vib_kl is not None and vib_beta is not None:
+                    loss = loss + float(vib_beta) * vib_kl
 
                 loss = loss.detach().cpu()
                 total_loss.append(loss)
@@ -133,6 +155,11 @@ class Exp_Forecast(Exp_Basic):
         time_now = time.time()
 
         train_steps = len(finetune_loader)
+        if train_steps <= 0:
+            raise RuntimeError(
+                "finetune: train DataLoader has zero batches (cannot finetune). "
+                "Check batch_size / dataset / DistributedSampler."
+            )
         early_stopping = EarlyStopping(
             patience=self.args.patience, verbose=True, local_rank=self.args.local_rank
         )
@@ -146,14 +173,26 @@ class Exp_Forecast(Exp_Basic):
         _n_tr = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print("Model parameters (total): ", _n_all)
         print("Model parameters (trainable): ", _n_tr)
+        if _n_tr <= 0:
+            raise RuntimeError("finetune: no trainable parameters after apply_timer_finetune_freeze.")
+        if int(self.args.finetune_epochs) <= 0:
+            raise RuntimeError("finetune: finetune_epochs must be >= 1 (otherwise no training / no checkpoint).")
         scheduler = LargeScheduler(self.args, model_optim)
 
+        total_ft_steps = max(1, self.args.finetune_epochs * train_steps)
+        beta_sched = BetaScheduler(
+            total_ft_steps,
+            warmup_ratio=float(getattr(self.args, "vib_warmup_ratio", 0.1)),
+            beta_max=float(getattr(self.args, "vib_beta_max", 1e-4)),
+        )
+        global_step = 0
 
         for epoch in range(self.args.finetune_epochs):
             iter_count = 0
 
-            loss_val = torch.tensor(0., device="cuda")
-            count = torch.tensor(0., device="cuda")
+            _dev = next(self.model.parameters()).device
+            loss_val = torch.tensor(0., device=_dev)
+            count = torch.tensor(0., device=_dev)
 
             self.model.train()
             epoch_time = time.time()
@@ -168,26 +207,34 @@ class Exp_Forecast(Exp_Basic):
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
-                if self.args.output_attention:
-                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
-                else:
-                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+                outputs, vib_kl, _ = self._forward_forecast(
+                    batch_x, batch_x_mark, dec_inp, batch_y_mark,
+                    return_vib_kl=self._timer_vib_active(),
+                )
+                beta_t = beta_sched(global_step) if self._timer_vib_active() else 0.0
 
                 loss = self._finetune_forecast_loss(
                     criterion, outputs, batch_y, "vali"
                 )
+                if vib_kl is not None:
+                    loss = loss + beta_t * vib_kl
 
                 loss_val += loss.item()
                 count += 1
+                global_step += 1
 
                 if i % 50 == 0:
                     cost_time = time.time() - time_now
+                    _mem_a = torch.cuda.memory_allocated() / 1024 / 1024 if torch.cuda.is_available() else 0
+                    _mem_r = torch.cuda.memory_reserved() / 1024 / 1024 if torch.cuda.is_available() else 0
+                    _mem_c = (
+                        torch.cuda.memory_cached() / 1024 / 1024
+                        if torch.cuda.is_available() and hasattr(torch.cuda, "memory_cached")
+                        else 0
+                    )
                     print(
-                        "\titers: {0}, epoch: {1} | loss: {2:.7f} | cost_time: {3:.0f} | memory: allocated {4:.0f}MB, reserved {5:.0f}MB, cached {6:.0f}MB "
-                        .format(i, epoch + 1, loss.item(), cost_time,
-                                torch.cuda.memory_allocated() / 1024 / 1024,
-                                torch.cuda.memory_reserved() / 1024 / 1024,
-                                torch.cuda.memory_cached() / 1024 / 1024))
+                        "\titers: {0}, epoch: {1} | loss: {2:.7f} | beta: {3:.2e} | cost_time: {4:.0f} | memory: allocated {5:.0f}MB, reserved {6:.0f}MB, cached {7:.0f}MB "
+                        .format(i, epoch + 1, loss.item(), beta_t, cost_time, _mem_a, _mem_r, _mem_c))
                     time_now = time.time()
 
                 loss.backward()
@@ -201,9 +248,10 @@ class Exp_Forecast(Exp_Basic):
                 dist.all_reduce(count, op=dist.ReduceOp.SUM)
             train_loss = loss_val.item() / count.item()
 
-            vali_loss = self.vali(vali_data, vali_loader, criterion)
+            vib_beta_val = beta_sched(max(0, global_step - 1)) if self._timer_vib_active() else None
+            vali_loss = self.vali(vali_data, vali_loader, criterion, vib_beta=vib_beta_val)
             if self.args.train_test:
-                test_loss = self.vali(test_data, test_loader, criterion, flag='test')
+                test_loss = self.vali(test_data, test_loader, criterion, flag='test', vib_beta=vib_beta_val)
                 print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
                     epoch + 1, train_steps, train_loss, vali_loss, test_loss))
             else:
@@ -220,12 +268,35 @@ class Exp_Forecast(Exp_Basic):
         best_model_path = path + '/' + 'checkpoint.pth'
         if self.args.use_multi_gpu:
             dist.barrier()
-        self.model.load_state_dict(torch.load(best_model_path))
+        if not os.path.isfile(best_model_path):
+            raise FileNotFoundError(
+                f"finetune: expected best checkpoint at {best_model_path} but file is missing. "
+                "Training loop may not have saved (bug) or finetune_epochs was 0."
+            )
+        state = torch.load(best_model_path, map_location=self.device)
+        self.model.load_state_dict(state, strict=True)
+        self._finetune_checkpoint_path = os.path.abspath(best_model_path)
+        print(
+            f"Finetune: loaded best state_dict into self.model for testing "
+            f"(trained_batches={global_step}, path={self._finetune_checkpoint_path})",
+            flush=True,
+        )
 
         return self.model
 
     def test(self, setting, test=0):
 
+        _ck = getattr(self, "_finetune_checkpoint_path", None)
+        if _ck:
+            print(
+                f"test(): using in-memory weights after finetune (best ckpt: {_ck})",
+                flush=True,
+            )
+        else:
+            print(
+                "test(): using in-memory weights from model __init__ (no finetune in this process)",
+                flush=True,
+            )
         print('Model parameters: ', sum(param.numel() for param in self.model.parameters()))
         attns = []
         folder_path = './test_results/' + setting + '/' + self.args.data_path + '/' + f'{self.args.output_len}/'

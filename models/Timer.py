@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -135,6 +137,30 @@ class Model(nn.Module):
             or self._recycle_hsic_arr is not None
         )
 
+        # Variational information bottleneck before patch Linear head (forecast only).
+        self.use_timer_vib = bool(int(getattr(configs, "timer_vib", 0)))
+        if self.use_timer_vib:
+            self.mu_layer = nn.Linear(self.d_model, self.d_model)
+            self.logvar_layer = nn.Linear(self.d_model, self.d_model)
+
+    def _vib_transform(
+        self, dec_out: torch.Tensor, return_vib_kl: bool
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Reparameterize z ~ q(z|x); optional analytic KL to N(0,I) per latent dim (summed, then mean over tokens)."""
+        mu = self.mu_layer(dec_out)
+        logvar = self.logvar_layer(dec_out)
+        logvar = torch.clamp(logvar, min=-30.0, max=20.0)
+        need_kl = bool(return_vib_kl or self.training)
+        if self.training:
+            eps = torch.randn_like(mu)
+            z = mu + eps * torch.exp(0.5 * logvar)
+        else:
+            z = mu
+        vib_kl = None
+        if need_kl:
+            vib_kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum(dim=-1).mean()
+        return z, vib_kl
+
     def _recycle_patch_indices_for_layer(self, n_patches: int, layer_idx: int) -> list[int]:
         """
         Patch indices to recycle at encoder layer layer_idx.
@@ -241,7 +267,7 @@ class Model(nn.Module):
         gamma = self.periodic_gamma.to(dtype=dec_out.dtype)
         return dec_out + gamma * periodic
 
-    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, return_vib_kl: bool = False):
         B, L, M = x_enc.shape
 
         means = x_enc.mean(1, keepdim=True).detach()
@@ -254,12 +280,21 @@ class Model(nn.Module):
 
         dec_out, attns = self._decoder_forward_with_optional_recycle(dec_in)
         dec_out = self._apply_periodic_residual(dec_out, x_mark_enc, B, L, n_vars)
+
+        vib_kl = None
+        if self.use_timer_vib:
+            dec_out, vib_kl = self._vib_transform(dec_out, return_vib_kl)
+
         dec_out = self.proj(dec_out)
         dec_out = dec_out.reshape(B, M, -1).transpose(1, 2)
 
         dec_out = dec_out * stdev + means
         if self.output_attention:
+            if return_vib_kl and self.use_timer_vib and vib_kl is not None:
+                return dec_out, attns, vib_kl
             return dec_out, attns
+        if return_vib_kl and self.use_timer_vib and vib_kl is not None:
+            return dec_out, vib_kl
         return dec_out
 
     def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
@@ -303,9 +338,9 @@ class Model(nn.Module):
         dec_out = dec_out * stdev + means
         return dec_out
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, return_vib_kl: bool = False):
         if self.task_name == 'forecast':
-            return self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            return self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec, return_vib_kl=return_vib_kl)
         if self.task_name == 'imputation':
             return self.imputation(
                 x_enc, x_mark_enc, x_dec, x_mark_dec, mask)

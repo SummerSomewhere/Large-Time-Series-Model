@@ -85,9 +85,10 @@ if __name__ == '__main__':
         '--finetune_trainable',
         type=str,
         default='full',
-        choices=['full', 'last_layer', 'periodic_emb_proj'],
+        choices=['full', 'last_layer', 'periodic_emb_proj', 'proj_only', 'vib_proj'],
         help='Timer: full; last_layer; periodic_emb_proj=hour/day embed + gamma + proj only '
-        '(needs periodic_embedding_branch=1)',
+        '(needs periodic_embedding_branch=1); proj_only=patch Linear head only; '
+        'vib_proj=VIB mu/logvar+proj only (needs timer_vib=1)',
     )
     parser.add_argument('--local_rank', type=int, default=0, help='local_rank')
 
@@ -109,6 +110,24 @@ if __name__ == '__main__':
         type=float,
         default=0.0,
         help='Forecast finetune: Total=(1-α)*MSE+α*MAE(rFFT(pred),rFFT(target)); 0=pure MSE',
+    )
+    parser.add_argument(
+        '--timer_vib',
+        type=int,
+        default=0,
+        help='Timer forecast: VIB (mu/logvar) before Linear proj; finetune loss += beta*KL(q(z|x)||N(0,I))',
+    )
+    parser.add_argument(
+        '--vib_beta_max',
+        type=float,
+        default=1e-4,
+        help='Timer VIB: target beta on KL after warmup (linear ramp over remaining steps)',
+    )
+    parser.add_argument(
+        '--vib_warmup_ratio',
+        type=float,
+        default=0.1,
+        help='Timer VIB: first this fraction of finetune steps use beta=0',
     )
     parser.add_argument('--subset_rand_ratio', type=float, default=1, help='mask ratio')
     parser.add_argument('--data_type', type=str, default='custom', help='data_type')
@@ -218,10 +237,20 @@ if __name__ == '__main__':
     else:
         raise ValueError('task name not found')
 
+    # Always visible on rank 0 (not swallowed by HiddenPrints for non-zero ranks).
+    _lr_print = int(os.environ.get("LOCAL_RANK", "0"))
+    if _lr_print == 0 and args.task_name == 'forecast':
+        _ft = int(getattr(args, 'is_finetuning', 0) or 0)
+        print(
+            f"[run.py] is_finetuning={_ft} -> "
+            f"{'exp.finetune() then exp.test() (best checkpoint.pth loaded at end of finetune)' if _ft else 'exp.test() only — weights from ckpt_path in model __init__, no finetune'}",
+            flush=True,
+        )
+
     with HiddenPrints(int(os.environ.get("LOCAL_RANK", "0"))):
         print('Args in experiment:')
         print(args)
-        if args.is_finetuning:
+        if int(getattr(args, 'is_finetuning', 0) or 0):
             for ii in range(args.itr):
                 # setting record of experiments
                 setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}'.format(

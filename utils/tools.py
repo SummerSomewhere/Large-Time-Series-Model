@@ -50,6 +50,29 @@ def adjust_learning_rate(optimizer, epoch, args):
         print('Updating learning rate to {}'.format(lr))
 
 
+class BetaScheduler:
+    """
+    VIB KL weight: beta=0 for the first warmup_ratio * total_steps steps, then linear ramp
+    to beta_max so the last training step (index total_steps - 1) reaches beta_max.
+    """
+
+    def __init__(self, total_steps: int, warmup_ratio: float = 0.1, beta_max: float = 1e-4):
+        self.total_steps = max(1, int(total_steps))
+        self.warmup_steps = max(0, int(round(float(warmup_ratio) * self.total_steps)))
+        self.beta_max = float(beta_max)
+
+    def __call__(self, step: int) -> float:
+        step = max(0, int(step))
+        if step < self.warmup_steps:
+            return 0.0
+        ramp_end = self.total_steps - 1
+        if ramp_end <= self.warmup_steps:
+            return self.beta_max
+        denom = max(1, ramp_end - self.warmup_steps)
+        t = min(1.0, (step - self.warmup_steps) / float(denom))
+        return t * self.beta_max
+
+
 class LargeScheduler:
     def __init__(self, args, optimizer) -> None:
         super().__init__()
@@ -345,6 +368,9 @@ def apply_timer_finetune_freeze(model, args) -> None:
       - last_layer: last EncoderLayer FFN + norms + inner_attention + proj; Q/K/V/out stay frozen.
       - periodic_emb_proj: freeze backbone; train hour_embed, day_embed, periodic_gamma, proj
         (requires periodic_embedding_branch=1).
+      - proj_only: freeze backbone; train Linear patch head (proj) only — fair baseline vs vib_proj.
+      - vib_proj: freeze backbone (+ periodic branch if any); train mu_layer, logvar_layer, proj
+        (requires timer_vib=1).
     """
     mode = getattr(args, "finetune_trainable", "full")
     if mode is None or mode == "full":
@@ -376,6 +402,20 @@ def apply_timer_finetune_freeze(model, args) -> None:
         align = getattr(m, "periodic_to_hidden", None)
         if align is not None:
             for p in align.parameters():
+                p.requires_grad = True
+        for p in m.backbone.proj.parameters():
+            p.requires_grad = True
+    elif mode == "proj_only":
+        for p in m.backbone.proj.parameters():
+            p.requires_grad = True
+    elif mode == "vib_proj":
+        if not int(getattr(args, "timer_vib", 0)):
+            raise ValueError("finetune_trainable=vib_proj requires timer_vib=1")
+        if getattr(m, "mu_layer", None) is not None:
+            for p in m.mu_layer.parameters():
+                p.requires_grad = True
+        if getattr(m, "logvar_layer", None) is not None:
+            for p in m.logvar_layer.parameters():
                 p.requires_grad = True
         for p in m.backbone.proj.parameters():
             p.requires_grad = True
