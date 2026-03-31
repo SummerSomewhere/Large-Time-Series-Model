@@ -13,6 +13,31 @@ from models.periodic_time_utils import (
 )
 
 
+class SIGGate(nn.Module):
+    """
+    Zero-init patch-wise gate: injects processed first-layer features into the final
+    encoder representation before the patch projection head. alpha starts at 0 (no-op).
+    lambda_scale amplifies the gated residual so small alpha updates affect MSE more clearly.
+    """
+
+    def __init__(self, d_model: int, num_patches: int, lambda_scale: float = 10.0):
+        super().__init__()
+        self.alpha = nn.Parameter(torch.zeros(num_patches, 1))
+        # Constant scale (buffer: not optimized, moves with module device/dtype in forward).
+        self.register_buffer("lambda_scale", torch.tensor(float(lambda_scale), dtype=torch.float32))
+        self.proj = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model),
+        )
+
+    def forward(self, current_feat: torch.Tensor, recycle_feat: torch.Tensor) -> torch.Tensor:
+        # current_feat, recycle_feat: [B_flat, N, D]; alpha [N, 1] broadcasts over B and D
+        out = self.proj(recycle_feat)
+        g = self.alpha.unsqueeze(0)
+        ls = self.lambda_scale.to(dtype=current_feat.dtype, device=current_feat.device)
+        return current_feat + ls * (g * out)
+
+
 class Model(nn.Module):
     """
     Timer: Generative Pre-trained Transformers Are Large Time Series Models (ICML 2024)
@@ -73,6 +98,23 @@ class Model(nn.Module):
                     self.backbone.load_state_dict(sd, strict=strict_load)
                 else:
                     raise NotImplementedError
+
+        # SIG-Gate: bridge first vs last encoder representations (forecast); alpha=0 init.
+        self.use_sig_gate = bool(int(getattr(configs, "sig_gate", 0)))
+        self.sig_gate: SIGGate | None = None
+        if self.use_sig_gate and self.task_name == "forecast":
+            pe = self.enc_embedding
+            pad = pe.padding_patch_layer.padding
+            pad_r = pad[-1] if isinstance(pad, tuple) and len(pad) >= 2 else 0
+            L = int(getattr(configs, "seq_len", 0))
+            Lp = L + pad_r
+            if Lp >= pe.patch_len:
+                n_sig = (Lp - pe.patch_len) // pe.stride + 1
+                _lg = float(getattr(configs, "sig_gate_lambda_scale", 10.0))
+                self.sig_gate = SIGGate(self.d_model, n_sig, lambda_scale=_lg)
+                print(f"SIGGate: num_patches={n_sig}, lambda_scale={_lg}", flush=True)
+            else:
+                print("WARNING: sig_gate disabled (seq_len too short for patch grid).")
 
         # Lightweight representation recycle (forecast only): at listed encoder layers, for each
         # selected patch run K rounds: h <- h + alpha_k * (TF_l(h) - h) on length-1 seq, then
@@ -186,24 +228,33 @@ class Model(nn.Module):
             indices = list(self._recycle_patch_indices_cfg)
         return [i for i in indices if 0 <= i < n_patches]
 
-    def _decoder_forward_with_optional_recycle(self, x: torch.Tensor) -> tuple[torch.Tensor, list]:
+    def _decoder_forward_with_optional_recycle(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, list, torch.Tensor | None]:
         """
-        Encoder forward; lightweight recycle on configured layers (e.g. first + last):
-        for each round alpha_k: h <- h + alpha_k * (TF_l(h) - h), then F.layer_norm(h, (D,)).
+        Encoder forward; optional recycle; optional capture of layer-0 output for SIG-Gate.
+        Returns (x, attns, first_layer_feat_or_none). first_layer_feat is cloned after layer 0
+        forward (before recycle edits on layer 0) so recycle in-place updates do not alias it.
         """
-        if not self._recycle_wants_active:
-            return self.decoder(x)
+        first_layer_feat: torch.Tensor | None = None
+
+        if not self._recycle_wants_active and not self.use_sig_gate:
+            x, attns = self.decoder(x)
+            return x, attns, None
 
         n_enc = len(self.decoder.attn_layers)
         last_i = n_enc - 1
-        if self.recycle_encoder_layers:
-            layer_set = frozenset(i for i in self.recycle_encoder_layers if 0 <= i < n_enc)
-        elif 0 <= self.recycle_encoder_layer < n_enc:
-            layer_set = frozenset([self.recycle_encoder_layer])
+        if self._recycle_wants_active:
+            if self.recycle_encoder_layers:
+                layer_set = frozenset(i for i in self.recycle_encoder_layers if 0 <= i < n_enc)
+            elif 0 <= self.recycle_encoder_layer < n_enc:
+                layer_set = frozenset([self.recycle_encoder_layer])
+            else:
+                layer_set = frozenset()
+            if not layer_set:
+                layer_set = frozenset([last_i])
         else:
             layer_set = frozenset()
-        if not layer_set:
-            layer_set = frozenset([last_i])
 
         d_model = x.shape[-1]
         norm_eps = self.decoder.norm.eps if self.decoder.norm is not None else 1e-5
@@ -213,6 +264,8 @@ class Model(nn.Module):
         for i, layer in enumerate(self.decoder.attn_layers):
             x, attn = layer(x)
             attns.append(attn)
+            if self.use_sig_gate and i == 0:
+                first_layer_feat = x.clone()
             if i in layer_set:
                 patch_idx = self._recycle_patch_indices_for_layer(x.shape[1], i)
                 for pi in patch_idx:
@@ -224,7 +277,7 @@ class Model(nn.Module):
                         x[:, pi, :] = F.layer_norm(h_final, (d_model,), eps=norm_eps)
         if self.decoder.norm is not None:
             x = self.decoder.norm(x)
-        return x, attns
+        return x, attns, first_layer_feat
 
     def _apply_periodic_residual(
         self,
@@ -278,7 +331,9 @@ class Model(nn.Module):
         x_enc = x_enc.permute(0, 2, 1)
         dec_in, n_vars = self.enc_embedding(x_enc)
 
-        dec_out, attns = self._decoder_forward_with_optional_recycle(dec_in)
+        dec_out, attns, first_layer_feat = self._decoder_forward_with_optional_recycle(dec_in)
+        if self.sig_gate is not None and first_layer_feat is not None:
+            dec_out = self.sig_gate(dec_out, first_layer_feat)
         dec_out = self._apply_periodic_residual(dec_out, x_mark_enc, B, L, n_vars)
 
         vib_kl = None

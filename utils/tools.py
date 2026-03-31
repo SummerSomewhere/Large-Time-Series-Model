@@ -10,6 +10,9 @@ import torch.distributed as dist
 
 plt.switch_backend('agg')
 
+# Timer SIG-Gate: alpha-only param group uses this multiplier vs base lr (weight_decay=0).
+SIG_GATE_ALPHA_LR_MULT = 100.0
+
 
 def _atomic_torch_save(obj, final_path: str) -> None:
     """Write to a temp file in the same directory, then os.replace (avoids truncated files if process dies mid-write)."""
@@ -106,11 +109,15 @@ class LargeScheduler:
             lr = lr_adjust[epoch]
             for param_group in self.optimizer.param_groups:
                 tag = param_group.get("finetune_group", "main")
-                if tag == "main":
-                    param_group["lr"] = lr
+                if tag == "sig_gate_alpha":
+                    param_group["lr"] = lr * SIG_GATE_ALPHA_LR_MULT
                 else:
                     param_group["lr"] = lr
-            print('Updating learning rate to {}'.format(lr))
+            print(
+                'Updating learning rate to {} (sig_gate.alpha uses {:.0f}x base when present)'.format(
+                    lr, SIG_GATE_ALPHA_LR_MULT
+                )
+            )
 
     def schedule_step(self, n: int):
         if self.lradj == 'cos_step':
@@ -342,22 +349,49 @@ def fft_complex_mae(pred: torch.Tensor, true: torch.Tensor, time_dim: int = 1) -
 
 def build_timer_finetune_param_groups(model, args):
     """
-    Timer: one Adam param group for all trainable tensors (learning_rate + optional weight_decay).
+    Timer: main group (lr + optional weight_decay); optional SIG-Gate alpha-only group
+    (SIG_GATE_ALPHA_LR_MULT x lr, weight_decay=0) so gates can move off zero faster without WD shrinkage.
     """
     m = model.module if hasattr(model, "module") else model
-    trainable = [p for p in m.parameters() if p.requires_grad]
-    if not trainable:
-        return []
     wd = float(args.weight_decay) if int(getattr(args, "use_weight_decay", 0)) else 0.0
     lr_main = float(args.learning_rate)
-    return [
-        {
-            "params": trainable,
-            "lr": lr_main,
-            "weight_decay": wd,
-            "finetune_group": "main",
-        }
-    ]
+
+    sig_gate = getattr(m, "sig_gate", None)
+    sig_alpha_param = sig_gate.alpha if sig_gate is not None else None
+
+    main_params: list = []
+    alpha_params: list = []
+    for p in m.parameters():
+        if not p.requires_grad:
+            continue
+        if sig_alpha_param is not None and p is sig_alpha_param:
+            alpha_params.append(p)
+        else:
+            main_params.append(p)
+
+    if not main_params and not alpha_params:
+        return []
+
+    groups: list = []
+    if main_params:
+        groups.append(
+            {
+                "params": main_params,
+                "lr": lr_main,
+                "weight_decay": wd,
+                "finetune_group": "main",
+            }
+        )
+    if alpha_params:
+        groups.append(
+            {
+                "params": alpha_params,
+                "lr": lr_main * SIG_GATE_ALPHA_LR_MULT,
+                "weight_decay": 0.0,
+                "finetune_group": "sig_gate_alpha",
+            }
+        )
+    return groups
 
 
 def apply_timer_finetune_freeze(model, args) -> None:

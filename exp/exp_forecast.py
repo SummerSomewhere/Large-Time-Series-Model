@@ -5,6 +5,10 @@ import os
 import time
 import warnings
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -85,6 +89,76 @@ class Exp_Forecast(Exp_Basic):
     def _select_criterion(self):
         criterion = nn.MSELoss()
         return criterion
+
+    def _print_sig_gate_alpha_stats(self) -> None:
+        """Print SIG-Gate per-patch alpha distribution (rank 0 only)."""
+        if int(os.environ.get("LOCAL_RANK", "0")) != 0:
+            return
+        m = self.model.module if hasattr(self.model, "module") else self.model
+        sg = getattr(m, "sig_gate", None)
+        if sg is None:
+            return
+        a = sg.alpha.detach().float().cpu().view(-1).numpy()
+        _ls = float(sg.lambda_scale.detach().cpu().item()) if hasattr(sg, "lambda_scale") else float("nan")
+        print(f"sig_gate.lambda_scale={_ls}", flush=True)
+        print(
+            f"sig_gate.alpha: n_patches={a.size} min={float(a.min()):.6f} max={float(a.max()):.6f} "
+            f"mean={float(a.mean()):.6f} std={float(a.std()):.6f}",
+            flush=True,
+        )
+        flat = a.flatten().tolist()
+        print(f"sig_gate.alpha per-patch (index: value): { {i: float(flat[i]) for i in range(len(flat))} }", flush=True)
+
+    def _log_sig_gate_alpha_epoch(self, epoch_idx: int) -> None:
+        """After each finetune epoch, print raw alpha vector for monitoring patch gates (rank 0 only)."""
+        if int(os.environ.get("LOCAL_RANK", "0")) != 0:
+            return
+        m = self.model.module if hasattr(self.model, "module") else self.model
+        sg = getattr(m, "sig_gate", None)
+        if sg is None:
+            return
+        vals = sg.alpha.data.detach().float().cpu().flatten().numpy()
+        print(f"epoch {epoch_idx + 1} sig_gate.alpha (flat): {vals}", flush=True)
+
+    def _save_sig_gate_alpha_bar_chart(self, setting: str, save_dir: str) -> None:
+        """
+        After test metrics: bar chart of per-patch alpha; save under test_results and optionally checkpoints.
+        """
+        if int(os.environ.get("LOCAL_RANK", "0")) != 0:
+            return
+        m = self.model.module if hasattr(self.model, "module") else self.model
+        sg = getattr(m, "sig_gate", None)
+        if sg is None:
+            return
+        a = sg.alpha.detach().float().cpu().view(-1).numpy()
+        n = int(a.size)
+        indices = list(range(n))
+        patch_dict = {int(i): float(a[i]) for i in range(n)}
+        print(
+            "SIG-Gate alpha (post-test, per patch):\n"
+            + json.dumps(patch_dict, indent=2, ensure_ascii=False),
+            flush=True,
+        )
+        data_name = getattr(self.args, "data", "ETTh1")
+        plt.figure(figsize=(max(6, n * 0.6), 4))
+        plt.bar(indices, a.tolist(), color="steelblue", edgecolor="navy", linewidth=0.5)
+        plt.xlabel("Patch Index")
+        plt.ylabel("Alpha")
+        plt.title(f"SIG-Gate Patch-wise Importance ({data_name})")
+        plt.xticks(indices)
+        plt.grid(axis="y", linestyle="--", alpha=0.35)
+        plt.tight_layout()
+        os.makedirs(save_dir, exist_ok=True)
+        fig_name = "sig_gate_alpha_bar.png"
+        out1 = os.path.join(save_dir, fig_name)
+        plt.savefig(out1, dpi=150)
+        ckpt_dir = os.path.join(self.args.checkpoints, setting)
+        if os.path.isdir(ckpt_dir):
+            out2 = os.path.join(ckpt_dir, fig_name)
+            plt.savefig(out2, dpi=150)
+            print(f"SIG-Gate alpha bar chart also saved to {out2}", flush=True)
+        plt.close()
+        print(f"SIG-Gate alpha bar chart saved to {out1}", flush=True)
 
     def _timer_vib_active(self) -> bool:
         return getattr(self.args, "model", None) == "Timer" and int(getattr(self.args, "timer_vib", 0))
@@ -258,6 +332,7 @@ class Exp_Forecast(Exp_Basic):
                 print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format(
                     epoch + 1, train_steps, train_loss, vali_loss))
 
+            self._log_sig_gate_alpha_epoch(epoch)
 
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
@@ -298,6 +373,7 @@ class Exp_Forecast(Exp_Basic):
                 flush=True,
             )
         print('Model parameters: ', sum(param.numel() for param in self.model.parameters()))
+        self._print_sig_gate_alpha_stats()
         attns = []
         folder_path = './test_results/' + setting + '/' + self.args.data_path + '/' + f'{self.args.output_len}/'
         if not os.path.exists(folder_path) and int(os.environ.get("LOCAL_RANK", "0")) == 0:
@@ -411,5 +487,8 @@ class Exp_Forecast(Exp_Basic):
                         json.dump(metrics_records, mf, indent=2)
                 except OSError as e:
                     print(f"WARNING: could not write FORECAST_TEST_METRICS_JSON={metrics_path}: {e}")
+
+            if int(os.environ.get("LOCAL_RANK", "0")) == 0:
+                self._save_sig_gate_alpha_bar_chart(setting, folder_path)
 
         return

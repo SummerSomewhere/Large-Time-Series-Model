@@ -60,7 +60,7 @@ if __name__ == '__main__':
     parser.add_argument('--itr', type=int, default=1, help='experiments times')
     parser.add_argument('--train_epochs', type=int, default=10, help='train epochs')
     parser.add_argument('--batch_size', type=int, default=32, help='batch size of train input data')
-    parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
+    parser.add_argument('--patience', type=int, default=15, help='early stopping patience')
     parser.add_argument(
         '--learning_rate',
         type=float,
@@ -202,6 +202,18 @@ if __name__ == '__main__':
         type=str,
         default='',
         help='Timer: comma-separated alphas for successive rounds per patch (e.g. 0.4,0.2)',
+    )
+    parser.add_argument(
+        '--sig_gate',
+        type=int,
+        default=0,
+        help='Timer forecast: SIG-Gate after encoder (zero-init per-patch alpha bridges layer-0 to pre-head)',
+    )
+    parser.add_argument(
+        '--sig_gate_lambda_scale',
+        type=float,
+        default=10.0,
+        help='Timer SIG-Gate: multiplies gated residual (alpha * projected recycle feat); default 10',
     )
 
     # imputation task
