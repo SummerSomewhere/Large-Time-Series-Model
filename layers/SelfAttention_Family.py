@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 
 import torch
@@ -14,12 +16,34 @@ class FullAttention(nn.Module):
         scale=None,
         attention_dropout=0.1,
         output_attention=False,
+        num_patches: int | None = None,
+        n_heads: int | None = None,
+        mi_bias_patch_indices: tuple[int, ...] | None = None,
+        mi_bias_init_val: float = 0.5,
     ):
         super(FullAttention, self).__init__()
         self.scale = scale
         self.mask_flag = mask_flag
         self.output_attention = output_attention
         self.dropout = nn.Dropout(attention_dropout)
+        # Optional [H, P, P] additive logits before softmax (physically informed key-patch prior).
+        self.mi_bias: nn.Parameter | None
+        if (
+            num_patches is not None
+            and n_heads is not None
+            and int(num_patches) > 0
+            and int(n_heads) > 0
+        ):
+            p, h = int(num_patches), int(n_heads)
+            self.mi_bias = nn.Parameter(torch.zeros(h, p, p))
+            idxs = mi_bias_patch_indices if mi_bias_patch_indices else (3, 6)
+            with torch.no_grad():
+                for j in idxs:
+                    jj = int(j)
+                    if 0 <= jj < p:
+                        self.mi_bias[:, :, jj] = float(mi_bias_init_val)
+        else:
+            self.mi_bias = None
 
     def forward(self, queries, keys, values, attn_mask, tau=None, delta=None):
         B, L, H, E = queries.shape
@@ -27,14 +51,18 @@ class FullAttention(nn.Module):
         scale = self.scale or 1.0 / math.sqrt(E)
 
         scores = torch.einsum("blhe,bshe->bhls", queries, keys)
+        # Match common QK^T / sqrt(d) logits, then add learnable prior, then softmax (see below).
+        attn_logits = scale * scores
+        if self.mi_bias is not None and L == self.mi_bias.shape[1] and S == self.mi_bias.shape[2]:
+            attn_logits = attn_logits + self.mi_bias.unsqueeze(0)
 
         if self.mask_flag:
             if attn_mask is None:
                 attn_mask = TriangularCausalMask(B, L, device=queries.device)
 
-            scores = scores.masked_fill(attn_mask.mask, float("-inf"))
+            attn_logits = attn_logits.masked_fill(attn_mask.mask, float("-inf"))
 
-        A = self.dropout(torch.softmax(scale * scores, dim=-1))
+        A = self.dropout(torch.softmax(attn_logits, dim=-1))
         V = torch.einsum("bhls,bshd->blhd", A, values)
 
         if self.output_attention:

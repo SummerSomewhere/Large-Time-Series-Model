@@ -114,7 +114,7 @@ class LargeScheduler:
                 else:
                     param_group["lr"] = lr
             print(
-                'Updating learning rate to {} (sig_gate.alpha uses {:.0f}x base when present)'.format(
+                'Updating learning rate to {} (gate alpha scalars use {:.0f}x base when present)'.format(
                     lr, SIG_GATE_ALPHA_LR_MULT
                 )
             )
@@ -349,8 +349,9 @@ def fft_complex_mae(pred: torch.Tensor, true: torch.Tensor, time_dim: int = 1) -
 
 def build_timer_finetune_param_groups(model, args):
     """
-    Timer: main group (lr + optional weight_decay); optional SIG-Gate alpha-only group
-    (SIG_GATE_ALPHA_LR_MULT x lr, weight_decay=0) so gates can move off zero faster without WD shrinkage.
+    Timer: main group (lr + optional weight_decay); optional zero-init gate scalars (legacy sig_gate alpha,
+    HM-ISR entry/exit alpha, CrossAttentionBridge alpha) in a high-lr group
+    (SIG_GATE_ALPHA_LR_MULT x lr, weight_decay=0).
     """
     m = model.module if hasattr(model, "module") else model
     wd = float(args.weight_decay) if int(getattr(args, "use_weight_decay", 0)) else 0.0
@@ -358,6 +359,12 @@ def build_timer_finetune_param_groups(model, args):
 
     sig_gate = getattr(m, "sig_gate", None)
     sig_alpha_param = sig_gate.alpha if sig_gate is not None else None
+    hm_e = getattr(m, "hm_isr_entry", None)
+    hm_e_alpha = hm_e.alpha if hm_e is not None else None
+    hm_x = getattr(m, "hm_isr_exit", None)
+    hm_x_alpha = hm_x.alpha if hm_x is not None else None
+    cab = getattr(m, "cross_attn_bridge", None)
+    cab_alpha_param = cab.alpha if cab is not None else None
 
     main_params: list = []
     alpha_params: list = []
@@ -365,6 +372,12 @@ def build_timer_finetune_param_groups(model, args):
         if not p.requires_grad:
             continue
         if sig_alpha_param is not None and p is sig_alpha_param:
+            alpha_params.append(p)
+        elif hm_e_alpha is not None and p is hm_e_alpha:
+            alpha_params.append(p)
+        elif hm_x_alpha is not None and p is hm_x_alpha:
+            alpha_params.append(p)
+        elif cab_alpha_param is not None and p is cab_alpha_param:
             alpha_params.append(p)
         else:
             main_params.append(p)

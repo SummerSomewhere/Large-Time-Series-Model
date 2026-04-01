@@ -94,6 +94,36 @@ if __name__ == '__main__':
 
     parser.add_argument('--patch_len', type=int, default=24, help='input sequence length')
     parser.add_argument(
+        '--geometric_hpe',
+        type=int,
+        default=0,
+        help='Timer backbone: curvature-scaled patch embed + harmonic PE (learnable omega, phi); no absolute PE',
+    )
+    parser.add_argument(
+        '--geometric_hpe_periods',
+        type=str,
+        default='24,168',
+        help='Comma-separated periods in time steps (e.g. hours) for learnable harmonic omega init',
+    )
+    parser.add_argument(
+        '--geometric_hpe_curv_phase_scale',
+        type=float,
+        default=1.0,
+        help='Initial scale for tanh(curvature) -> phase shift in Geometric-HPE',
+    )
+    parser.add_argument(
+        '--spectral_residual_branch',
+        type=int,
+        default=0,
+        help='Timer: FFT log-amplitude spectral residual saliency prompt after patch embed (before encoder)',
+    )
+    parser.add_argument(
+        '--sr_smooth_kernel',
+        type=int,
+        default=3,
+        help='Timer spectral_residual_branch: avg_pool1d kernel on log-amplitude (frequency axis)',
+    )
+    parser.add_argument(
         '--periodic_embedding_branch',
         type=int,
         default=0,
@@ -214,6 +244,84 @@ if __name__ == '__main__':
         type=float,
         default=10.0,
         help='Timer SIG-Gate: multiplies gated residual (alpha * projected recycle feat); default 10',
+    )
+    parser.add_argument(
+        '--hm_isr',
+        type=int,
+        default=0,
+        help='Timer forecast: HM-ISR hard-mask in-stack refiners (patch 3/6 default); disables legacy post-stack sig_gate',
+    )
+    parser.add_argument(
+        '--hm_isr_lambda_scale',
+        type=float,
+        default=10.0,
+        help='HM-ISR: scales (alpha*mask)*MLP residual at entry/exit; default 10',
+    )
+    parser.add_argument(
+        '--hm_isr_patch_indices',
+        type=str,
+        default='3,6',
+        help='HM-ISR: comma-separated patch indices for hard mask (must exist for num_patches)',
+    )
+    parser.add_argument(
+        '--mi_preservation',
+        type=int,
+        default=0,
+        help='Timer forecast: cosine MI preservation loss on selected patches (train only; no infer overhead)',
+    )
+    parser.add_argument(
+        '--lambda_mi',
+        type=float,
+        default=0.001,
+        help='Weight for MI preservation loss (after mi_warmup_epochs)',
+    )
+    parser.add_argument(
+        '--mi_warmup_epochs',
+        type=int,
+        default=2,
+        help='Finetune: first N epochs (0..N-1) use prediction loss only; then add lambda_mi * loss_mi',
+    )
+    parser.add_argument(
+        '--mi_patch_indices',
+        type=str,
+        default='3,6',
+        help='Comma-separated patch indices for MI preservation (must exist for num_patches)',
+    )
+    parser.add_argument(
+        '--mi_att_bias',
+        type=int,
+        default=0,
+        help='Timer backbone: per-layer learnable attention logit bias [H,P,P] with MI key-patch prior',
+    )
+    parser.add_argument(
+        '--mi_att_bias_init',
+        type=float,
+        default=0.5,
+        help='Initial logit boost for keys at mi_att_bias_patches (all heads and query positions)',
+    )
+    parser.add_argument(
+        '--mi_att_bias_patches',
+        type=str,
+        default='3,6',
+        help='Comma-separated key patch indices for positive mi_bias init',
+    )
+    parser.add_argument(
+        '--cross_attn_bridge',
+        type=int,
+        default=0,
+        help='Timer forecast: cross-attn Q=final stack, K/V=layer-0 memory; disables linear recycle',
+    )
+    parser.add_argument(
+        '--cross_attn_bridge_heads',
+        type=int,
+        default=2,
+        help='CrossAttentionBridge heads (1-4); coerced so d_model is divisible by head count',
+    )
+    parser.add_argument(
+        '--cross_attn_bridge_dropout',
+        type=float,
+        default=-1.0,
+        help='CrossAttentionBridge MHA dropout; <0 uses model dropout',
     )
 
     # imputation task

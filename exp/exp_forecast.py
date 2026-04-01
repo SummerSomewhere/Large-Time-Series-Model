@@ -49,6 +49,8 @@ class Exp_Forecast(Exp_Basic):
         return data_set, data_loader
 
     def _select_optimizer(self):
+        # Timer: sig_gate.alpha (and HM-ISR / CAB scalars) are split into high-lr group via
+        # build_timer_finetune_param_groups — same as filter(requires_grad) but explicit groups.
         if getattr(self.args, "model", None) == "Timer":
             groups = build_timer_finetune_param_groups(self.model, self.args)
             if groups:
@@ -65,6 +67,45 @@ class Exp_Forecast(Exp_Basic):
         else:
             model_optim = optim.Adam(params, lr=self.args.learning_rate)
         return model_optim
+
+    _sig_gate_debug_bwd_prints_left: int | None = None
+
+    def _debug_sig_gate_after_backward(self) -> None:
+        """After loss.backward(): print sig_gate.alpha.grad (first N steps if SIG_REFINER_DEBUG=1)."""
+        if int(os.environ.get("SIG_REFINER_DEBUG", "0")) == 0:
+            return
+        if int(os.environ.get("LOCAL_RANK", "0")) != 0:
+            return
+        if getattr(self.args, "model", None) != "Timer":
+            return
+        rem = Exp_Forecast._sig_gate_debug_bwd_prints_left
+        if rem is None:
+            Exp_Forecast._sig_gate_debug_bwd_prints_left = 10
+            rem = 10
+        if rem <= 0:
+            return
+        Exp_Forecast._sig_gate_debug_bwd_prints_left = rem - 1
+        m = self.model.module if hasattr(self.model, "module") else self.model
+        sg = getattr(m, "sig_gate", None)
+        if sg is None:
+            print(">>> DEBUG [after bwd]: sig_gate is None (use --sig_gate 1; HM-ISR replaces it)", flush=True)
+            return
+        a = sg.alpha
+        if a.grad is None:
+            print(
+                ">>> DEBUG [after bwd]: sig_gate.alpha.grad is None (check graph / find_unused_parameters)",
+                flush=True,
+            )
+        else:
+            print(
+                f">>> DEBUG [after bwd]: sig_gate.alpha grad mean={a.grad.mean().item():.8e}",
+                flush=True,
+            )
+
+    def _timer_mi_preservation_active(self) -> bool:
+        return getattr(self.args, "model", None) == "Timer" and int(
+            getattr(self.args, "mi_preservation", 0)
+        ) == 1
 
     def _finetune_forecast_loss(self, criterion, outputs, batch_y, flag: str):
         """TimeEmb-style: (1-α)*MSE + α*mean(|rFFT(pred)-rFFT(target)|) (complex coeff MAE)."""
@@ -91,10 +132,45 @@ class Exp_Forecast(Exp_Basic):
         return criterion
 
     def _print_sig_gate_alpha_stats(self) -> None:
-        """Print SIG-Gate per-patch alpha distribution (rank 0 only)."""
+        """Print HM-ISR and/or legacy SIG-Gate alpha stats (rank 0 only)."""
         if int(os.environ.get("LOCAL_RANK", "0")) != 0:
             return
         m = self.model.module if hasattr(self.model, "module") else self.model
+
+        def _print_hm(tag: str, mod) -> None:
+            a = mod.alpha.detach().float().cpu().view(-1).numpy()
+            ls = float(mod.lambda_scale.detach().cpu().item())
+            mask = mod.patch_hard_mask.detach().float().cpu().view(-1).numpy()
+            print(f"{tag}.lambda_scale={ls}", flush=True)
+            print(
+                f"{tag}.hard_mask: "
+                + json.dumps({int(i): float(mask[i]) for i in range(int(mask.size))}, ensure_ascii=False),
+                flush=True,
+            )
+            if a.size > 6:
+                print(
+                    f"{tag}.alpha[3]={float(a[3]):.6f} {tag}.alpha[6]={float(a[6]):.6f}",
+                    flush=True,
+                )
+            print(
+                f"{tag}.alpha: n_patches={a.size} min={float(a.min()):.6f} max={float(a.max()):.6f} "
+                f"mean={float(a.mean()):.6f} std={float(a.std()):.6f}",
+                flush=True,
+            )
+            flat = a.flatten().tolist()
+            print(
+                f"{tag}.alpha per-patch: "
+                + json.dumps({i: float(flat[i]) for i in range(len(flat))}, ensure_ascii=False),
+                flush=True,
+            )
+
+        he = getattr(m, "hm_isr_entry", None)
+        hx = getattr(m, "hm_isr_exit", None)
+        if he is not None:
+            _print_hm("hm_isr_entry", he)
+        if hx is not None:
+            _print_hm("hm_isr_exit", hx)
+
         sg = getattr(m, "sig_gate", None)
         if sg is None:
             return
@@ -110,74 +186,127 @@ class Exp_Forecast(Exp_Basic):
         print(f"sig_gate.alpha per-patch (index: value): { {i: float(flat[i]) for i in range(len(flat))} }", flush=True)
 
     def _log_sig_gate_alpha_epoch(self, epoch_idx: int) -> None:
-        """After each finetune epoch, print raw alpha vector for monitoring patch gates (rank 0 only)."""
+        """After each finetune epoch, print raw alpha vectors for HM-ISR / SIG-Gate (rank 0 only)."""
         if int(os.environ.get("LOCAL_RANK", "0")) != 0:
             return
         m = self.model.module if hasattr(self.model, "module") else self.model
+        ep = epoch_idx + 1
+        he = getattr(m, "hm_isr_entry", None)
+        hx = getattr(m, "hm_isr_exit", None)
         sg = getattr(m, "sig_gate", None)
-        if sg is None:
+        if he is None and hx is None and sg is None:
             return
-        vals = sg.alpha.data.detach().float().cpu().flatten().numpy()
-        print(f"epoch {epoch_idx + 1} sig_gate.alpha (flat): {vals}", flush=True)
+        if he is not None:
+            print(f"epoch {ep} hm_isr_entry.alpha (flat): {he.alpha.data.detach().float().cpu().flatten().numpy()}", flush=True)
+        if hx is not None:
+            print(f"epoch {ep} hm_isr_exit.alpha (flat): {hx.alpha.data.detach().float().cpu().flatten().numpy()}", flush=True)
+        if sg is not None:
+            print(f"epoch {ep} sig_gate.alpha (flat): {sg.alpha.data.detach().float().cpu().flatten().numpy()}", flush=True)
 
     def _save_sig_gate_alpha_bar_chart(self, setting: str, save_dir: str) -> None:
         """
-        After test metrics: bar chart of per-patch alpha; save under test_results and optionally checkpoints.
+        After test metrics: bar charts of per-patch alpha for HM-ISR entry/exit and/or legacy sig_gate.
         """
         if int(os.environ.get("LOCAL_RANK", "0")) != 0:
             return
         m = self.model.module if hasattr(self.model, "module") else self.model
-        sg = getattr(m, "sig_gate", None)
-        if sg is None:
-            return
-        a = sg.alpha.detach().float().cpu().view(-1).numpy()
-        n = int(a.size)
-        indices = list(range(n))
-        patch_dict = {int(i): float(a[i]) for i in range(n)}
-        print(
-            "SIG-Gate alpha (post-test, per patch):\n"
-            + json.dumps(patch_dict, indent=2, ensure_ascii=False),
-            flush=True,
-        )
         data_name = getattr(self.args, "data", "ETTh1")
-        plt.figure(figsize=(max(6, n * 0.6), 4))
-        plt.bar(indices, a.tolist(), color="steelblue", edgecolor="navy", linewidth=0.5)
-        plt.xlabel("Patch Index")
-        plt.ylabel("Alpha")
-        plt.title(f"SIG-Gate Patch-wise Importance ({data_name})")
-        plt.xticks(indices)
-        plt.grid(axis="y", linestyle="--", alpha=0.35)
-        plt.tight_layout()
-        os.makedirs(save_dir, exist_ok=True)
-        fig_name = "sig_gate_alpha_bar.png"
-        out1 = os.path.join(save_dir, fig_name)
-        plt.savefig(out1, dpi=150)
-        ckpt_dir = os.path.join(self.args.checkpoints, setting)
-        if os.path.isdir(ckpt_dir):
-            out2 = os.path.join(ckpt_dir, fig_name)
-            plt.savefig(out2, dpi=150)
-            print(f"SIG-Gate alpha bar chart also saved to {out2}", flush=True)
-        plt.close()
-        print(f"SIG-Gate alpha bar chart saved to {out1}", flush=True)
+        specs = [
+            ("hm_isr_entry", getattr(m, "hm_isr_entry", None), f"HM-ISR entry alpha ({data_name})", "hm_isr_entry_alpha_bar.png"),
+            ("hm_isr_exit", getattr(m, "hm_isr_exit", None), f"HM-ISR exit alpha ({data_name})", "hm_isr_exit_alpha_bar.png"),
+            ("sig_gate", getattr(m, "sig_gate", None), f"SIG-Gate Patch-wise Importance ({data_name})", "sig_gate_alpha_bar.png"),
+        ]
+        any_plot = False
+        for _tag, mod, title, fig_name in specs:
+            if mod is None:
+                continue
+            any_plot = True
+            a = mod.alpha.detach().float().cpu().view(-1).numpy()
+            n = int(a.size)
+            indices = list(range(n))
+            patch_dict = {int(i): float(a[i]) for i in range(n)}
+            print(
+                f"{_tag} alpha (post-test, per patch):\n"
+                + json.dumps(patch_dict, indent=2, ensure_ascii=False),
+                flush=True,
+            )
+            plt.figure(figsize=(max(6, n * 0.6), 4))
+            plt.bar(indices, a.tolist(), color="steelblue", edgecolor="navy", linewidth=0.5)
+            plt.xlabel("Patch Index")
+            plt.ylabel("Alpha")
+            plt.title(title)
+            plt.xticks(indices)
+            plt.grid(axis="y", linestyle="--", alpha=0.35)
+            plt.tight_layout()
+            os.makedirs(save_dir, exist_ok=True)
+            out1 = os.path.join(save_dir, fig_name)
+            plt.savefig(out1, dpi=150)
+            ckpt_dir = os.path.join(self.args.checkpoints, setting)
+            if os.path.isdir(ckpt_dir):
+                out2 = os.path.join(ckpt_dir, fig_name)
+                plt.savefig(out2, dpi=150)
+                print(f"{_tag} alpha bar chart also saved to {out2}", flush=True)
+            plt.close()
+            print(f"{_tag} alpha bar chart saved to {out1}", flush=True)
+        if not any_plot:
+            return
 
     def _timer_vib_active(self) -> bool:
         return getattr(self.args, "model", None) == "Timer" and int(getattr(self.args, "timer_vib", 0))
 
-    def _forward_forecast(self, batch_x, batch_x_mark, dec_inp, batch_y_mark, return_vib_kl: bool = False):
-        """Returns (outputs, vib_kl_or_none, attns_or_none). attns only if output_attention."""
+    def _forecast_model_kwargs(self, return_vib_kl: bool, mi_on: bool) -> dict:
+        """Timer-only keys; other backbones must not see unknown forward kwargs."""
+        kw: dict = {}
+        if return_vib_kl:
+            kw["return_vib_kl"] = True
+        if getattr(self.args, "model", None) == "Timer" and mi_on:
+            kw["return_mi_feats"] = True
+        return kw
+
+    def _forward_forecast(
+        self,
+        batch_x,
+        batch_x_mark,
+        dec_inp,
+        batch_y_mark,
+        return_vib_kl: bool = False,
+        return_mi_feats: bool = False,
+    ):
+        """
+        Returns (outputs, vib_kl, attns, feat_early, feat_late, mi_loss).
+        mi_loss is a scalar tensor from Timer.forward when mi_preservation+return_mi_feats (else None).
+        """
+        mi_on = bool(return_mi_feats) and self._timer_mi_preservation_active()
+        if getattr(self.args, "model", None) != "Timer":
+            mi_on = False
+        fkw = self._forecast_model_kwargs(return_vib_kl, mi_on)
+
         if not self._timer_vib_active() or not return_vib_kl:
             if self.args.output_attention:
-                out = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-                return out[0], None, out[1]
-            out = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
-            return out, None, None
+                out = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark, **fkw)
+                if mi_on:
+                    dec_out, attns, fe, fl, mi_loss = out
+                    return dec_out, None, attns, fe, fl, mi_loss
+                dec_out, attns = out
+                return dec_out, None, attns, None, None, None
+            out = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark, **fkw)
+            if mi_on:
+                dec_out, fe, fl, mi_loss = out
+                return dec_out, None, None, fe, fl, mi_loss
+            return out, None, None, None, None, None
         if self.args.output_attention:
-            dec_out, attns, vib_kl = self.model(
-                batch_x, batch_x_mark, dec_inp, batch_y_mark, return_vib_kl=True
-            )
-            return dec_out, vib_kl, attns
-        dec_out, vib_kl = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark, return_vib_kl=True)
-        return dec_out, vib_kl, None
+            out = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark, **fkw)
+            if mi_on:
+                dec_out, attns, vib_kl, fe, fl, mi_loss = out
+                return dec_out, vib_kl, attns, fe, fl, mi_loss
+            dec_out, attns, vib_kl = out
+            return dec_out, vib_kl, attns, None, None, None
+        out = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark, **fkw)
+        if mi_on:
+            dec_out, vib_kl, fe, fl, mi_loss = out
+            return dec_out, vib_kl, None, fe, fl, mi_loss
+        dec_out, vib_kl = out
+        return dec_out, vib_kl, None, None, None, None
 
     def vali(self, vali_data, vali_loader, criterion, epoch=0, flag='vali', vib_beta: float | None = None):
         total_loss = []
@@ -193,7 +322,7 @@ class Exp_Forecast(Exp_Basic):
 
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float()
-                outputs, vib_kl, _ = self._forward_forecast(
+                outputs, vib_kl, _, _, _, _ = self._forward_forecast(
                     batch_x, batch_x_mark, dec_inp, batch_y_mark,
                     return_vib_kl=self._timer_vib_active(),
                 )
@@ -281,9 +410,13 @@ class Exp_Forecast(Exp_Basic):
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
 
-                outputs, vib_kl, _ = self._forward_forecast(
-                    batch_x, batch_x_mark, dec_inp, batch_y_mark,
+                outputs, vib_kl, _, _, _, mi_loss = self._forward_forecast(
+                    batch_x,
+                    batch_x_mark,
+                    dec_inp,
+                    batch_y_mark,
                     return_vib_kl=self._timer_vib_active(),
+                    return_mi_feats=self._timer_mi_preservation_active(),
                 )
                 beta_t = beta_sched(global_step) if self._timer_vib_active() else 0.0
 
@@ -292,6 +425,13 @@ class Exp_Forecast(Exp_Basic):
                 )
                 if vib_kl is not None:
                     loss = loss + beta_t * vib_kl
+                # Always add w*mi_loss when MI is on so mi_proj stays in the autograd graph under DDP
+                # (warmup uses w=0 so no gradient to MI head until mi_warmup_epochs).
+                if self._timer_mi_preservation_active() and mi_loss is not None:
+                    w = float(getattr(self.args, "lambda_mi", 0.001))
+                    if epoch < int(getattr(self.args, "mi_warmup_epochs", 0)):
+                        w = 0.0
+                    loss = loss + w * mi_loss
 
                 loss_val += loss.item()
                 count += 1
@@ -312,6 +452,7 @@ class Exp_Forecast(Exp_Basic):
                     time_now = time.time()
 
                 loss.backward()
+                self._debug_sig_gate_after_backward()
                 model_optim.step()
                 torch.cuda.empty_cache()
 

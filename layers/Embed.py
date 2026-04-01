@@ -1,6 +1,92 @@
 import math
+
 import torch
 import torch.nn as nn
+
+
+def parse_geometric_hpe_periods_hours(raw: str = "") -> tuple[float, ...]:
+    """Comma/space-separated periods in time steps (e.g. hours for hourly ETT). Defaults: daily + weekly."""
+    s = str(raw or "").strip()
+    if not s:
+        return (24.0, 168.0)
+    out: list[float] = []
+    for part in s.replace(",", " ").split():
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(float(part))
+        except ValueError:
+            continue
+    return tuple(out) if out else (24.0, 168.0)
+
+
+class GeometricHPEPatchEmbedding(nn.Module):
+    """
+    Geometric-HPE: curvature from raw patches scales the linear patch embedding; harmonic phase
+    encoding replaces absolute sinusoidal PE. PE_h = sin(omega_h * t + phi_eff), with phi_eff
+    curvature-guided so high-|k| patches shift phase (toward locking extrema).
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        patch_len: int,
+        stride: int,
+        padding: int,
+        dropout: float,
+        num_patches: int,
+        periods_hours: tuple[float, ...] = (24.0, 168.0),
+        curv_phase_scale_init: float = 1.0,
+    ):
+        super().__init__()
+        if num_patches <= 0:
+            raise ValueError("GeometricHPEPatchEmbedding requires num_patches > 0")
+        self.patch_len = patch_len
+        self.stride = stride
+        self.num_patches = num_patches
+        self.padding_patch_layer = nn.ReplicationPad1d((0, padding))
+        self.value_embedding = nn.Linear(patch_len, d_model, bias=False)
+        self.dropout = nn.Dropout(dropout)
+
+        h = len(periods_hours)
+        self.n_harmonics = h
+        omega_init = torch.tensor(
+            [2.0 * math.pi / float(p) for p in periods_hours], dtype=torch.float32
+        )
+        self.omega = nn.Parameter(omega_init.clone())
+        self.phi = nn.Parameter(torch.zeros(num_patches, h))
+        nn.init.uniform_(self.phi, -0.1, 0.1)
+        self.curv_to_phase = nn.Parameter(
+            torch.full((h,), float(curv_phase_scale_init), dtype=torch.float32)
+        )
+        self.pe_proj = nn.Linear(h, d_model, bias=True)
+        # Patch center time index (hours) for harmonic argument; fixed given seq_len / stride.
+        centers = torch.arange(num_patches, dtype=torch.float32) * float(stride) + float(patch_len) / 2.0
+        self.register_buffer("patch_center_hours", centers)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, int]:
+        n_vars = x.shape[1]
+        x = self.padding_patch_layer(x)
+        x = x.unfold(dimension=-1, size=self.patch_len, step=self.stride)
+        x = torch.reshape(x, (x.shape[0] * x.shape[1], x.shape[2], x.shape[3]))
+        bm, n, _pl = x.shape
+        d2 = torch.diff(x, n=2, dim=-1)
+        if d2.numel() == 0:
+            k = torch.zeros(bm, n, device=x.device, dtype=x.dtype)
+        else:
+            k = torch.mean(torch.abs(d2), dim=-1)
+
+        v = self.value_embedding(x)
+        v = v * (1.0 + torch.sigmoid(k.unsqueeze(-1)))
+
+        t = self.patch_center_hours.to(device=x.device, dtype=x.dtype)
+        phi_eff = self.phi.unsqueeze(0) + torch.tanh(k.unsqueeze(-1)) * self.curv_to_phase.view(1, 1, -1)
+        angles = self.omega.view(1, 1, -1) * t.view(1, n, 1) + phi_eff
+        pe_h = torch.sin(angles)
+        pe = self.pe_proj(pe_h)
+        out = v + pe
+        return self.dropout(out), n_vars
 
 
 class PositionalEmbedding(nn.Module):
