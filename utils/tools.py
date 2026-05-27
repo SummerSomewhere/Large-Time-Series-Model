@@ -108,6 +108,7 @@ class EarlyStopping:
             self.counter = 0
 
     def save_checkpoint(self, val_loss, model, path):
+        os.makedirs(path, exist_ok=True)
         if self.verbose:
             print(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
         torch.save(model.state_dict(), path + '/' + 'checkpoint.pth')
@@ -164,6 +165,7 @@ class EarlyStoppingLarge:
         return self.best_epoch
 
     def save_checkpoint(self, val_loss, model, path, epoch):
+        os.makedirs(path, exist_ok=True)
         torch.save(model.state_dict(), path + '/' + f'checkpoint_{epoch}.pth')
 
 

@@ -1,0 +1,132 @@
+{
+  "mode": "dataset_average",
+  "csv": "/home/xyh/Large-Time-Series-Model/datasets/ETTh1.csv",
+  "windows": [
+    0,
+    672,
+    1344,
+    2016,
+    2688,
+    3360,
+    4032,
+    4704,
+    5376,
+    6048,
+    6720,
+    7392,
+    8064,
+    8736,
+    9408,
+    10080,
+    10752,
+    11424,
+    12096,
+    12768,
+    13440,
+    14112,
+    14784,
+    15456,
+    16128
+  ],
+  "n_windows": 25,
+  "window_hop_used": 672,
+  "seq_len": 672,
+  "patch_len": 24,
+  "stride": 24,
+  "mi_group_mode": "high_vs_rest",
+  "high_quantile": 0.75,
+  "low_quantile": 0.25,
+  "hsic_source": "live HSIC (joint_concat), L=8 (mean MI over 25 windows)",
+  "n_layers": 8,
+  "layers_plotted": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "layers_detail": [
+    {
+      "layer": 0,
+      "mi_label": "live HSIC (joint_concat), L=8 (mean MI over 25 windows)  layer 0/7",
+      "mi_group_mode": "high_vs_rest",
+      "high_quantile_threshold": 0.043896487765014175,
+      "n_high": 7,
+      "n_low": 21,
+      "n_windows_used": 25
+    },
+    {
+      "layer": 1,
+      "mi_label": "live HSIC (joint_concat), L=8 (mean MI over 25 windows)  layer 1/7",
+      "mi_group_mode": "high_vs_rest",
+      "high_quantile_threshold": 0.04404300652444363,
+      "n_high": 7,
+      "n_low": 21,
+      "n_windows_used": 25
+    },
+    {
+      "layer": 2,
+      "mi_label": "live HSIC (joint_concat), L=8 (mean MI over 25 windows)  layer 2/7",
+      "mi_group_mode": "high_vs_rest",
+      "high_quantile_threshold": 0.04300111137330532,
+      "n_high": 7,
+      "n_low": 21,
+      "n_windows_used": 25
+    },
+    {
+      "layer": 3,
+      "mi_label": "live HSIC (joint_concat), L=8 (mean MI over 25 windows)  layer 3/7",
+      "mi_group_mode": "high_vs_rest",
+      "high_quantile_threshold": 0.04276879947632552,
+      "n_high": 7,
+      "n_low": 21,
+      "n_windows_used": 25
+    },
+    {
+      "layer": 4,
+      "mi_label": "live HSIC (joint_concat), L=8 (mean MI over 25 windows)  layer 4/7",
+      "mi_group_mode": "high_vs_rest",
+      "high_quantile_threshold": 0.04271754734218121,
+      "n_high": 7,
+      "n_low": 21,
+      "n_windows_used": 25
+    },
+    {
+      "layer": 5,
+      "mi_label": "live HSIC (joint_concat), L=8 (mean MI over 25 windows)  layer 5/7",
+      "mi_group_mode": "high_vs_rest",
+      "high_quantile_threshold": 0.042343568243086334,
+      "n_high": 7,
+      "n_low": 21,
+      "n_windows_used": 25
+    },
+    {
+      "layer": 6,
+      "mi_label": "live HSIC (joint_concat), L=8 (mean MI over 25 windows)  layer 6/7",
+      "mi_group_mode": "high_vs_rest",
+      "high_quantile_threshold": 0.04346095737069845,
+      "n_high": 7,
+      "n_low": 21,
+      "n_windows_used": 25
+    },
+    {
+      "layer": 7,
+      "mi_label": "live HSIC (joint_concat), L=8 (mean MI over 25 windows)  layer 7/7",
+      "mi_group_mode": "high_vs_rest",
+      "high_quantile_threshold": 0.047347347289323806,
+      "n_high": 7,
+      "n_low": 21,
+      "n_windows_used": 25
+    }
+  ],
+  "n_patches": 28,
+  "stft": {
+    "fs": 1.0,
+    "nperseg": 24,
+    "noverlap": 12,
+    "nfft": null
+  }
+}

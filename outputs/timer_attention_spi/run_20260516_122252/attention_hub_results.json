@@ -1,0 +1,43 @@
+{
+  "timestamp": "2026-05-16T12:23:28.371201",
+  "args": {
+    "ckpt_path": "checkpoints/Timer_forecast_1.0.ckpt",
+    "root_path": "./datasets/",
+    "data_path": "ETTh1.csv",
+    "data_type": "ETTh1",
+    "seq_len": 672,
+    "pred_len": 96,
+    "patch_len": 96,
+    "stride": 96,
+    "d_model": 1024,
+    "d_ff": 2048,
+    "e_layers": 8,
+    "n_heads": 8,
+    "dropout": 0.1,
+    "batch_size": 64,
+    "n_batches": null,
+    "target_layer": 7,
+    "sample_size": 500,
+    "seed": 42,
+    "k_neighbors": 5,
+    "pca_dim": 32,
+    "gpu": 0,
+    "freq": "h",
+    "model_id": "etth1",
+    "out_dir": "./outputs/timer_attention_spi/run_20260516_122252"
+  },
+  "target_layer_result": {
+    "layer": 7,
+    "n_patches": 7,
+    "n_valid_tokens": 3500,
+    "pearson_r": 0.061716224937379854,
+    "pearson_p": 0.0002588312745111941,
+    "spearman_r": 0.0573896209808128,
+    "spearman_p": 0.0006817811828376307,
+    "fit_slope": 0.231656383243451,
+    "fit_intercept": 0.7784156368938419
+  },
+  "n_total_samples": 19495,
+  "n_sampled": 500,
+  "n_patches": 7
+}

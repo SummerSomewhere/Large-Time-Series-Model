@@ -1,0 +1,62 @@
+{
+  "global_sample_index": 25,
+  "batch_index": 0,
+  "in_batch_index": 25,
+  "forward_mode": "joint_concat",
+  "n_input_patches": 7,
+  "n_future_patch_tokens": 1,
+  "prediction_side_z_y": "concatenate future patch token dims (no mean); HSIC(h_x[t], z_y)",
+  "n_vars": 1,
+  "hsic_valid": false,
+  "note": "y = true future; joint_concat = one encode on cat(history,future) with clean patch boundary.",
+  "per_layer_peaks_hsic": [
+    {
+      "layer": 0,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 1,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 2,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 3,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 4,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 5,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 6,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 7,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    }
+  ]
+}

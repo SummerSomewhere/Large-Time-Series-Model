@@ -1,0 +1,77 @@
+{
+  "model_id": "etth1",
+  "timestamp": "2026-05-25T13:42:33.799035",
+  "config": {
+    "seq_len": 672,
+    "pred_len": 96,
+    "patch_len": 96,
+    "mask_ratio": 0.5,
+    "n_patches": 7,
+    "n_vars": 7,
+    "max_samples": 500
+  },
+  "mi_weights": {
+    "range": [
+      0.001556412986246869,
+      0.002507203200366348
+    ],
+    "mean": 0.002200709080040854,
+    "std": 0.00029146400114303316
+  },
+  "results": {
+    "random": {
+      "group": "Random",
+      "mask_type": "random",
+      "n_samples": 448,
+      "mse_total": 0.8289709218910762,
+      "mse_masked": 0.8245781696667629,
+      "mse_kept": 0.8322654803549605,
+      "mae_masked": 0.6459687102053847,
+      "mae_kept": 0.6364771277377648,
+      "masked_patches": null,
+      "kept_patches": null
+    },
+    "low_mi": {
+      "group": "Low-MI Masked (Keep Skeleton)",
+      "mask_type": "low_mi",
+      "n_samples": 448,
+      "mse_total": 0.9212266109617693,
+      "mse_masked": 1.176076133868524,
+      "mse_kept": 0.7300894660875201,
+      "mae_masked": 0.7882706590795091,
+      "mae_kept": 0.5811071479693055,
+      "masked_patches": [
+        0,
+        1,
+        2
+      ],
+      "kept_patches": [
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    "high_mi": {
+      "group": "High-MI Masked (Keep Noise)",
+      "mask_type": "high_mi",
+      "n_samples": 448,
+      "mse_total": 0.9119935686300907,
+      "mse_masked": 0.7352578598739845,
+      "mse_kept": 1.044545351128493,
+      "mae_masked": 0.5909884223448378,
+      "mae_kept": 0.7246775004480567,
+      "masked_patches": [
+        4,
+        5,
+        6
+      ],
+      "kept_patches": [
+        0,
+        1,
+        2,
+        3
+      ]
+    }
+  }
+}

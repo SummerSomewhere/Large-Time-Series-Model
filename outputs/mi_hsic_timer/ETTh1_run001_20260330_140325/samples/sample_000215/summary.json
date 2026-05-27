@@ -1,0 +1,59 @@
+{
+  "global_sample_index": 215,
+  "batch_index": 6,
+  "in_batch_index": 23,
+  "n_patches": 1,
+  "n_vars": 1,
+  "hsic_valid": false,
+  "note": "HSIC per patch uses n_vars rows; if n_vars<4, hsic is nan \u2014 use cos_align.",
+  "per_layer_peaks_hsic": [
+    {
+      "layer": 0,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 1,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 2,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 3,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 4,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 5,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 6,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    },
+    {
+      "layer": 7,
+      "iqr_threshold": NaN,
+      "peak_indices": [],
+      "peak_strength_max": null
+    }
+  ]
+}

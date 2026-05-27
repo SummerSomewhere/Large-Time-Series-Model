@@ -1,5 +1,6 @@
 import os
 
+import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -34,7 +35,7 @@ def data_provider(args, flag):
         freq = args.freq
 
     if args.task_name == 'forecast':
-        if args.use_ims:
+        if getattr(args, 'use_ims', False):
             data_set = CIAutoRegressionDatasetBenchmark(
                 root_path=os.path.join(args.root_path, args.data_path),
                 flag=flag,
@@ -46,7 +47,7 @@ def data_provider(args, flag):
                 timeenc=timeenc,
                 freq=args.freq,
                 stride=args.stride,
-                subset_rand_ratio=args.subset_rand_ratio,
+                subset_rand_ratio=getattr(args, 'subset_rand_ratio', 1.0),
             )
         else:
             data_set = CIDatasetBenchmark(
@@ -59,14 +60,26 @@ def data_provider(args, flag):
                 timeenc=timeenc,
                 freq=args.freq,
                 stride=args.stride,
-                subset_rand_ratio=args.subset_rand_ratio,
+                subset_rand_ratio=getattr(args, 'subset_rand_ratio', 1.0),
             )
         print(flag, len(data_set))
-        if args.use_multi_gpu:
-            train_datasampler = DistributedSampler(data_set, shuffle=shuffle_flag)
+        if getattr(args, 'use_multi_gpu', False):
+            if not dist.is_available() or not dist.is_initialized():
+                raise RuntimeError(
+                    "use_multi_gpu: call torch.distributed.init_process_group before data_provider "
+                    "(e.g. launch with torchrun --nproc_per_node=N)."
+                )
+            # 所有模式都使用 DistributedSampler 分割数据
+            # 测试模式下 shuffle=False 保证数据顺序一致
+            data_sampler = DistributedSampler(
+                data_set,
+                num_replicas=dist.get_world_size(),
+                rank=dist.get_rank(),
+                shuffle=shuffle_flag,
+            )
             data_loader = DataLoader(data_set,
                                      batch_size=args.batch_size,
-                                     sampler=train_datasampler,
+                                     sampler=data_sampler,
                                      num_workers=args.num_workers,
                                      persistent_workers=True,
                                      pin_memory=True,
@@ -77,7 +90,7 @@ def data_provider(args, flag):
                 data_set,
                 batch_size=args.batch_size,
                 shuffle=shuffle_flag,
-                num_workers=args.num_workers,
+                num_workers=getattr(args, 'num_workers', 0),
                 drop_last=False)
         return data_set, data_loader
 

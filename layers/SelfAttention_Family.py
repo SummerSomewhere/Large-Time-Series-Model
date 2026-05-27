@@ -27,13 +27,14 @@ class FullAttention(nn.Module):
 
             scores.masked_fill_(attn_mask.mask, -np.inf)
 
-        A = self.dropout(torch.softmax(scale * scores, dim=-1))
+        logits = scale * scores                      # [B, H, L, S] — raw (unnormalized) attention scores
+        A = self.dropout(torch.softmax(logits, dim=-1))
         V = torch.einsum("bhls,bshd->blhd", A, values)
 
         if self.output_attention:
-            return V.contiguous(), A
+            return V.contiguous(), A, logits
         else:
-            return V.contiguous(), None
+            return V.contiguous(), None, None
 
 
 class AttentionLayer(nn.Module):
@@ -60,7 +61,7 @@ class AttentionLayer(nn.Module):
         keys = self.key_projection(keys).view(B, S, H, -1)
         values = self.value_projection(values).view(B, S, H, -1)
 
-        out, attn = self.inner_attention(
+        out, attn, logits = self.inner_attention(
             queries,
             keys,
             values,
@@ -70,4 +71,4 @@ class AttentionLayer(nn.Module):
         )
         out = out.view(B, L, -1)
 
-        return self.out_projection(out), attn
+        return self.out_projection(out), attn, logits

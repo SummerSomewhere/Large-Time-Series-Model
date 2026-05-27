@@ -1,0 +1,92 @@
+{
+  "csv": "/home/xyh/Large-Time-Series-Model/datasets/ETTh1.csv",
+  "t_start": 10000,
+  "seq_len": 672,
+  "patch_len": 96,
+  "stride": 96,
+  "hsic_source": "HSIC npy 2D [L=8, P\u21927]",
+  "n_layers": 8,
+  "layers_plotted": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "layers_detail": [
+    {
+      "layer": 0,
+      "mi_label": "HSIC npy 2D [L=8, P\u21927]  layer 0/7",
+      "high_quantile_threshold": 0.017251182009931653,
+      "low_quantile_threshold": 0.016977388819213957,
+      "n_high": 2,
+      "n_low": 2
+    },
+    {
+      "layer": 1,
+      "mi_label": "HSIC npy 2D [L=8, P\u21927]  layer 1/7",
+      "high_quantile_threshold": 0.01664372180821374,
+      "low_quantile_threshold": 0.01642156004090793,
+      "n_high": 2,
+      "n_low": 2
+    },
+    {
+      "layer": 2,
+      "mi_label": "HSIC npy 2D [L=8, P\u21927]  layer 2/7",
+      "high_quantile_threshold": 0.016434269928140566,
+      "low_quantile_threshold": 0.01622077797073871,
+      "n_high": 2,
+      "n_low": 2
+    },
+    {
+      "layer": 3,
+      "mi_label": "HSIC npy 2D [L=8, P\u21927]  layer 3/7",
+      "high_quantile_threshold": 0.016508794977562503,
+      "low_quantile_threshold": 0.016306265833554788,
+      "n_high": 2,
+      "n_low": 2
+    },
+    {
+      "layer": 4,
+      "mi_label": "HSIC npy 2D [L=8, P\u21927]  layer 4/7",
+      "high_quantile_threshold": 0.016650415695039555,
+      "low_quantile_threshold": 0.016460819984786212,
+      "n_high": 2,
+      "n_low": 2
+    },
+    {
+      "layer": 5,
+      "mi_label": "HSIC npy 2D [L=8, P\u21927]  layer 5/7",
+      "high_quantile_threshold": 0.016504272539168596,
+      "low_quantile_threshold": 0.016389422863721848,
+      "n_high": 2,
+      "n_low": 2
+    },
+    {
+      "layer": 6,
+      "mi_label": "HSIC npy 2D [L=8, P\u21927]  layer 6/7",
+      "high_quantile_threshold": 0.01683478429331444,
+      "low_quantile_threshold": 0.016737999924225734,
+      "n_high": 2,
+      "n_low": 2
+    },
+    {
+      "layer": 7,
+      "mi_label": "HSIC npy 2D [L=8, P\u21927]  layer 7/7",
+      "high_quantile_threshold": 0.018576333281816914,
+      "low_quantile_threshold": 0.01852122475975193,
+      "n_high": 2,
+      "n_low": 2
+    }
+  ],
+  "n_patches": 7,
+  "stft": {
+    "fs": 1.0,
+    "nperseg": 64,
+    "noverlap": 32,
+    "nfft": null
+  }
+}

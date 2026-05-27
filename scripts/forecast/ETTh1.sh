@@ -9,15 +9,18 @@ patch_len=96
 ckpt_path=checkpoints/Timer_forecast_1.0.ckpt
 data=ETTh1
 
-for subset_rand_ratio in 0.01 0.02 0.03 0.04 0.05 0.1 0.15 0.2 0.25 0.5 0.75 1
+for subset_rand_ratio in 1
 do
+# ── GPU 配置 ─────────────────────────────────────────────────
+export CUDA_VISIBLE_DEVICES=4,5,6,7
+
 # train
 torchrun --nnodes=1 --nproc_per_node=4 run.py \
   --task_name forecast \
-  --is_training 0 \
+  --is_training 1 \
   --seed 1 \
   --ckpt_path $ckpt_path \
-  --root_path ./dataset/ETT-small/ \
+  --root_path ./datasets/ \
   --data_path $data.csv \
   --data $data \
   --model_id etth1_sr_$subset_rand_ratio \
@@ -39,7 +42,6 @@ torchrun --nnodes=1 --nproc_per_node=4 run.py \
   --train_test 0 \
   --subset_rand_ratio $subset_rand_ratio \
   --itr 1 \
-  --gpu 0 \
   --use_ims \
   --use_multi_gpu
 done

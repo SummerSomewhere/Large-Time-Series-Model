@@ -112,7 +112,69 @@ if __name__ == '__main__':
     # imputation task
     parser.add_argument('--mask_rate', type=float, default=0.25, help='mask ratio')
 
+    # Refinement mechanism
+    parser.add_argument('--enable_refinement', type=int, default=0, help='enable refinement mechanism for last layer')
+    parser.add_argument('--refine_patches', type=str, default='5,6',
+                       help='comma-separated patch indices for refinement (0-indexed), e.g., "5,6" for patches 6,7')
+    parser.add_argument('--refine_iterations', type=int, default=2, help='number of refinement iterations')
+    parser.add_argument('--refine_alpha', type=float, default=0.5, help='refinement blending coefficient')
+    parser.add_argument('--random_refine_patches', action='store_true', default=False,
+                       help='randomly select patches for refinement instead of using MI-based selection')
+
+    # Hierarchical Alignment Loss (Attn-MI Alignment)
+    # Two modes:
+    #   1. Post-softmax KL: L_align = (1/sum(M)) * sum_i M_i * KL(softmax(MI/tau) || softmax(attn_scores))
+    #   2. Logit-space MSE (new): L_align = (1/sum(M)) * sum_i M_i * sum_h MSE(logit_{i}^{(h)}, gamma * P_MI^{(l)})
+    parser.add_argument('--use_align_loss', action='store_true', default=False,
+                       help='enable hierarchical alignment loss during fine-tuning')
+    parser.add_argument('--align_loss_layers', type=str, default='0,1,2,3,4,5,6,7',
+                       help='comma-separated layer indices to apply alignment loss (0-indexed)')
+    parser.add_argument('--align_loss_weight', type=float, default=1.0,
+                       help='weight beta for the alignment loss term')
+    parser.add_argument('--align_loss_tau', type=float, default=0.1,
+                       help='temperature for softmax on MI scores: P_MI = softmax(MI/tau)  [post-softmax mode only]')
+    parser.add_argument('--align_loss_file', type=str, default='',
+                       help='path to .json file containing pre-computed MI distributions per layer')
+    parser.add_argument('--align_loss_freq', type=int, default=1,
+                       help='compute alignment loss every N steps (1=every step, 4=every 4 steps)')
+    parser.add_argument('--align_loss_mode', type=str, default='kl',
+                       choices=['kl', 'logit_mse', 'softdtw'],
+                       help="alignment loss formulation: 'kl' (post-softmax KL), "
+                            "'logit_mse' (logit-space MSE), or 'softdtw' (elastic Soft-DTW)")
+    parser.add_argument('--align_gamma', type=float, default=0.0,
+                       help="gamma scaling coefficient for logit-space MSE mode. "
+                            "0 means auto-set to sqrt(d_head). Can also be a learnable parameter.")
+    parser.add_argument('--align_gamma_learnable', action='store_true', default=False,
+                       help='make gamma a learnable parameter (logit_mse mode only)')
+    parser.add_argument('--align_sharp_heads', type=int, default=0,
+                       help='number of sharpest heads to average as the Logit target (0=all heads)')
+    parser.add_argument('--align_dtw_gamma', type=float, default=1.0,
+                       help="Soft-DTW temperature (gamma) for 'softdtw' mode. "
+                            "Controls softness of the alignment. "
+                            "gamma→0: hard DTW (sharp alignment). "
+                            "gamma→inf: approaches MSE (no temporal warping). "
+                            "Recommended: [0.01, 0.1, 1.0]. Default: 1.0")
+    parser.add_argument('--align_dtw_bw', type=int, default=-1,
+                       help="Sakoe-Chiba bandwidth for 'softdtw' mode. "
+                            "-1 means full alignment matrix (no band constraint). "
+                            "Positive int limits max deviation from diagonal. "
+                            "Default: -1 (safe for short sequences, S~7)")
+    parser.add_argument('--align_pool_size', type=int, default=1,
+                       help="Pooling window size W for region-wise alignment. "
+                            "Before computing the alignment loss, both the MI distribution "
+                            "and attention distributions are pooled with AvgPool(W) to "
+                            "coarsen the granularity from token-level to region-level. "
+                            "W=1: no pooling (token-to-token, the default). "
+                            "W=2-4: recommended for dense time series like ETTh1. "
+                            "If S % W != 0, the last remainder tokens are dropped. "
+                            "Default: 1 (disabled)")
+
     args = parser.parse_args()
+
+    if hasattr(args, 'refine_patches') and isinstance(args.refine_patches, str):
+        args.refine_patches = [int(x.strip()) for x in args.refine_patches.split(',') if x.strip()]
+    if hasattr(args, 'align_loss_layers') and isinstance(args.align_loss_layers, str):
+        args.align_loss_layers = [int(x.strip()) for x in args.align_loss_layers.split(',') if x.strip()]
     fix_seed = args.seed
     random.seed(fix_seed)
     torch.manual_seed(fix_seed)
@@ -148,7 +210,7 @@ if __name__ == '__main__':
         if args.is_finetuning:
             for ii in range(args.itr):
                 # setting record of experiments
-                setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}'.format(
+                setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_al{}_all{}_alm{}_{}'.format(
                     args.task_name,
                     args.model_id,
                     args.model,
@@ -166,6 +228,9 @@ if __name__ == '__main__':
                     args.factor,
                     args.embed,
                     args.distil,
+                    int(args.use_align_loss),
+                    '_'.join(map(str, args.align_loss_layers)),
+                    args.align_loss_mode,
                     args.des,
                     ii)
                 setting += datetime.now().strftime("%y-%m-%d_%H-%M-%S")

@@ -1,0 +1,23 @@
+{
+  "ckpt_path": "checkpoints/Timer_forecast_1.0.ckpt",
+  "d_model": 1024,
+  "d_ff": 2048,
+  "e_layers": 8,
+  "n_heads": 8,
+  "dropout": 0.1,
+  "seq_len": 672,
+  "pred_len": 96,
+  "patch_len": 96,
+  "n_samples": 2000,
+  "n_concepts": 7,
+  "batch_size": 64,
+  "k_neighbors": 3,
+  "pca_dim": 32,
+  "sample_ratio": 1.0,
+  "probe_alpha": 1.0,
+  "select_metric": "spi",
+  "anchor_ratio": 0.2,
+  "run_group2": true,
+  "gpu": 0,
+  "out_dir": "./outputs/timer_mi_probe/run_20260516_081641"
+}

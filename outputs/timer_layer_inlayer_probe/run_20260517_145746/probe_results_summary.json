@@ -1,0 +1,67 @@
+{
+  "components": {
+    "original": {
+      "best_layer_mse": [
+        5,
+        0.2764337658882141
+      ],
+      "best_layer_r2": [
+        5,
+        0.7500022462471312
+      ],
+      "high_mi_win_rate": 1.0
+    },
+    "trend": {
+      "best_layer_mse": [
+        5,
+        0.04210997000336647
+      ],
+      "best_layer_r2": [
+        5,
+        0.9175648419901727
+      ],
+      "high_mi_win_rate": 0.875
+    },
+    "seasonal": {
+      "best_layer_mse": [
+        7,
+        0.18638576567173004
+      ],
+      "best_layer_r2": [
+        7,
+        0.6584903426389235
+      ],
+      "high_mi_win_rate": 1.0
+    },
+    "residual": {
+      "best_layer_mse": [
+        4,
+        0.14019159972667694
+      ],
+      "best_layer_r2": [
+        4,
+        0.07987358772886388
+      ],
+      "high_mi_win_rate": 0.75
+    }
+  },
+  "config": {
+    "n_layers": 8,
+    "n_patches": 7,
+    "d_model": 1024,
+    "probe_epochs": 100,
+    "probe_lr": 0.001,
+    "data_path": "ETTh1.csv",
+    "seq_len": 672,
+    "pred_len": 96,
+    "mi_result_dir": "./outputs/timer_mi_ksg_pca/Timer_MI_20260516_133108",
+    "stl_period": 24,
+    "stl_target_var": 0,
+    "components": [
+      "original",
+      "trend",
+      "seasonal",
+      "residual"
+    ]
+  }
+}
